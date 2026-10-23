@@ -74,6 +74,21 @@ A local, event-driven weather application built with **Python, Apache Kafka, Mon
 
 > **Note:** This version uses a single local family profile (`local-family`), not multi-user authentication. Recommendations are informational and must be checked against actual conditions and the child's needs. Local model output can be imperfect.
 
+### Location Search & Multi-Location Tracking
+
+WeatherWatcher supports dynamic location management using the Open-Meteo Geocoding API.
+
+Features include:
+- Search for locations by city name or postal code.
+- Filter search results by country.
+- Add and remove tracked locations through the Streamlit dashboard.
+- Persist tracked locations in MongoDB.
+- Automatically fetch weather data for all tracked locations using a single producer.
+- Identify locations using unique Open-Meteo IDs.
+- Filter current weather and historical analytics by selected location.
+
+Tracked locations are managed independently of historical weather records. Removing a location stops future tracking without deleting existing weather data.
+
 ## Repository layout
 
 ```text
@@ -335,7 +350,7 @@ This normally preserves the MongoDB named volume. **Do not use `podman compose d
 - [x] Add city selection and filtering in the dashboard.
 - [x] Add historical weather/sentiment graphs.
 - [x] Add AI-based clothing suggestions for children.
-- [ ] Add a text search for a specific town (optionally with postal code).
+- [x] Add a text search for a specific town (including postal codes).
 - [x] Add family configuration: number of children, ages, optional gender, and activity preferences.
 - [x] Add tests, linting, and CI.
 - [ ] Improve resilience for Ollama outages and invalid records.
