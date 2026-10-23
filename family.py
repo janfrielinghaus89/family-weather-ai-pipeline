@@ -1,6 +1,5 @@
 import hashlib
 import json
-import os
 from datetime import datetime, timezone
 
 from config import OLLAMA_HOST, OLLAMA_MODEL
@@ -76,7 +75,6 @@ def get_cached_advice(db, key: str) -> dict | None:
     return db.family_recommendations.find_one({"_id": key})
 
 
-
 def get_weather_context(weather: dict) -> str:
     """Erstellt eine wetterabhängige Einordnung für Ollama."""
 
@@ -95,14 +93,13 @@ def get_weather_context(weather: dict) -> str:
     else:
         temperature_category = "heiß"
 
-    wind_category = (
-        "spürbarer Wind" if wind >= 20
-        else "wenig bis mäßiger Wind"
-    )
+    wind_category = "spürbarer Wind" if wind >= 20 else "wenig bis mäßiger Wind"
 
     rain_category = (
-        "hohe Regenwahrscheinlichkeit" if rain >= 70
-        else "mittlere Regenwahrscheinlichkeit" if rain >= 40
+        "hohe Regenwahrscheinlichkeit"
+        if rain >= 70
+        else "mittlere Regenwahrscheinlichkeit"
+        if rain >= 40
         else "geringe Regenwahrscheinlichkeit"
     )
 
@@ -137,10 +134,7 @@ def get_child_context(age_months: int) -> str:
             "kurze Spiel- und Bewegungseinheiten."
         )
     elif age_months < 48:
-        return (
-            "Kleinkind: aktive Bewegung und einfache "
-            "Entdeckungsspiele möglich."
-        )
+        return "Kleinkind: aktive Bewegung und einfache Entdeckungsspiele möglich."
     else:
         return (
             "Älteres Kind: aktive Bewegung, altersgerechte "
@@ -156,13 +150,11 @@ def generate_advice(weather: dict, profile: FamilyProfile) -> FamilyAdvice:
     child_count = len(profile.children)
     child_numbers = list(range(1, child_count + 1))
 
-    
     child_count = len(profile.children)
     child_numbers = list(range(1, child_count + 1))
 
     child_contexts = "\n".join(
-        f"Kind {i}: {child.age_months} Monate. "
-        f"{get_child_context(child.age_months)}"
+        f"Kind {i}: {child.age_months} Monate. {get_child_context(child.age_months)}"
         for i, child in enumerate(profile.children, start=1)
     )
 
@@ -229,7 +221,6 @@ QUALITÄTSREGELN:
 - Gib ausschließlich gültiges JSON gemäß Schema zurück.
 """
 
-
     expected = list(range(1, len(profile.children) + 1))
 
     for attempt in range(1, 4):
@@ -242,32 +233,23 @@ QUALITÄTSREGELN:
                         "Du bist ein Familienassistent. "
                         "Halte dich exakt an die Anzahl "
                         "und Nummerierung der Kinder."
-                    )
+                    ),
                 },
-                {
-                    "role": "user",
-                    "content": prompt
-                }
+                {"role": "user", "content": prompt},
             ],
             format=FamilyAdvice.model_json_schema(),
             options={"temperature": 0},
-            stream=False
+            stream=False,
         )
 
         try:
-            advice = FamilyAdvice.model_validate_json(
-                response.message.content
-            )
+            advice = FamilyAdvice.model_validate_json(response.message.content)
 
-            actual = sorted(
-                item.child_number
-                for item in advice.clothing
-            )
+            actual = sorted(item.child_number for item in advice.clothing)
 
             if actual != expected:
                 raise ValueError(
-                    f"Erwartete Kindernummern: {expected}, "
-                    f"erhalten: {actual}"
+                    f"Erwartete Kindernummern: {expected}, erhalten: {actual}"
                 )
 
             return advice
@@ -279,10 +261,7 @@ QUALITÄTSREGELN:
                     "keine gültige Familienempfehlung erstellt."
                 ) from error
 
-            print(
-                f"Ungültige KI-Antwort "
-                f"(Versuch {attempt}/3): {error}"
-            )
+            print(f"Ungültige KI-Antwort (Versuch {attempt}/3): {error}")
 
 
 def save_advice(
