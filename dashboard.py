@@ -4,6 +4,7 @@ from html import escape
 from dotenv import load_dotenv
 from urllib.parse import quote_plus
 from weather_utils import format_number, get_sentiment_style
+import requests
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -21,6 +22,14 @@ from family import (
     recommendation_key,
     save_advice,
     save_profile,
+)
+
+from location_service import (
+    search_locations,
+    location_label,
+    add_tracked_location,
+    list_tracked_locations,
+    remove_tracked_location,
 )
 
 load_dotenv()
@@ -57,29 +66,90 @@ def get_database():
     return client[DATABASE]
 
 
-def get_available_cities() -> list[str]:
-    """Ermittelt alle Städte mit gespeicherten Wetterdaten."""
+# ==========================================
+# Standorte suchen und verwalten
+# ==========================================
+
+with st.sidebar.expander("📍 Standorte verwalten"):
+    search_text = st.text_input(
+        "Stadt oder Postleitzahl", placeholder="Lippstadt oder 59555"
+    )
+
+    country_code = st.selectbox("Land", ["DE", "AT", "CH", "Alle"])
+
+    if st.button("🔍 Suchen"):
+        try:
+            matches = search_locations(
+                search_text, None if country_code == "Alle" else country_code
+            )
+
+            st.session_state["location_matches"] = matches
+
+        except requests.RequestException as error:
+            st.error(f"Suche fehlgeschlagen: {error}")
+
+    matches = st.session_state.get("location_matches", [])
+
+    if matches:
+        selected_index = st.selectbox(
+            "Gefundene Standorte",
+            options=list(range(len(matches))),
+            format_func=lambda i: location_label(matches[i]),
+        )
+
+        if st.button("➕ Standort hinzufügen"):
+            added = add_tracked_location(get_database(), matches[selected_index])
+
+            if added:
+                st.success("Standort hinzugefügt!")
+            else:
+                st.info("Standort bereits vorhanden.")
+
+            st.rerun()
+
+    st.divider()
+    st.markdown("**Gespeicherte Standorte**")
+
+    tracked = list_tracked_locations(get_database())
+
+    for location in tracked:
+        col_name, col_remove = st.columns([4, 1])
+
+        with col_name:
+            st.caption(location_label(location))
+
+        with col_remove:
+            if st.button("✕", key=f"remove_{location['_id']}"):
+                remove_tracked_location(get_database(), location["_id"])
+                st.rerun()
+
+
+# ==========================================
+# Stadtauswahl aus tracked_locations
+# ==========================================
+
+tracked_locations = list_tracked_locations(get_database())
+
+location_options = {str(loc["_id"]): loc for loc in tracked_locations}
+
+
+def location_query(location: dict | None) -> dict:
+    """Erstellt einen Filter für einen eindeutigen Standort."""
+    if location is None:
+        return {}
+
+    return {"weather.location_id": location["_id"]}
+
+
+def load_latest_weather(location: dict | None = None):
     db = get_database()
 
-    # Städte aus dem Feld "city" auslesen
-    cities = db[COLLECTION].distinct("city")
-
-    return sorted(city for city in cities if isinstance(city, str) and city.strip())
-
-
-def load_latest_weather(city: str | None = None):
-    """Lädt die neueste Wetteranalyse einer bestimmten Stadt."""
-    db = get_database()
-
-    query = {}
-
-    if city is not None:
-        query["city"] = city
-
-    return db[COLLECTION].find_one(filter=query, sort=[("metadata.processed_at", -1)])
+    return db[COLLECTION].find_one(
+        filter=location_query(location), sort=[("metadata.processed_at", -1)]
+    )
 
 
-def load_weather_history(city: str | None, days: int = 7) -> pd.DataFrame:
+def load_weather_history(location: dict | None, days: int = 7) -> pd.DataFrame:
     """Lädt historische Wetter- und Sentiment-Daten."""
 
     db = get_database()
@@ -88,8 +158,7 @@ def load_weather_history(city: str | None, days: int = 7) -> pd.DataFrame:
 
     query = {"metadata.processed_at": {"$gte": start_date}}
 
-    if city is not None:
-        query["city"] = city
+    query.update(location_query(location))
 
     cursor = (
         db[COLLECTION]
@@ -234,43 +303,42 @@ with header_right:
 
 
 # ==========================================
-# Stadtfilter und Datenabruf
+# Standortauswahl aus MongoDB
 # ==========================================
 
 try:
-    available_cities = get_available_cities()
+    tracked_locations = list_tracked_locations(get_database())
 
-    if not available_cities:
-        st.warning(
-            "Noch keine Städte in MongoDB vorhanden. "
-            "Bitte Producer und Consumer starten."
-        )
-        st.stop()
+    location_options = {
+        str(location["_id"]): location for location in tracked_locations
+    }
 
-    # Auswahlmöglichkeiten dynamisch erstellen
-    city_options = ["Alle Städte"] + available_cities
-
-    selected_city = st.selectbox(
+    selected_location_id = st.selectbox(
         "📍 Stadt auswählen",
-        options=city_options,
-        index=0,
-        key="selected_city",
-        help="Zeigt alle Städte an, für die Wetterdaten gespeichert wurden.",
+        options=[None] + list(location_options.keys()),
+        format_func=lambda location_id: (
+            "Alle Standorte"
+            if location_id is None
+            else location_label(location_options[location_id])
+        ),
+        key="selected_location_id",
     )
 
-    city_filter = None if selected_city == "Alle Städte" else selected_city
+    selected_location = (
+        location_options.get(selected_location_id)
+        if selected_location_id is not None
+        else None
+    )
 
-    # Neueste Wetteranalyse für den ausgewählten Filter laden
-    document = load_latest_weather(city_filter)
+    document = load_latest_weather(selected_location)
 
 except PyMongoError as error:
     st.error(f"MongoDB ist nicht erreichbar: {error}")
     st.stop()
 
-
-if not document:
-    st.warning(
-        "Noch keine Wetteranalysen vorhanden. Bitte Producer und Consumer starten."
+if document is None:
+    st.info(
+        "Für den ausgewählten Standort liegen noch keine verarbeiteten Wetterdaten vor."
     )
     st.stop()
 
@@ -564,9 +632,6 @@ else:
 st.divider()
 st.header("📈 Wetterhistorie")
 
-# Filter übernehmen
-history_city = None if selected_city == "Alle Städte" else selected_city
-
 filter_col, info_col = st.columns([2, 3])
 
 with filter_col:
@@ -583,7 +648,7 @@ with info_col:
     st.caption("Die Diagramme verwenden gespeicherte Wetteranalysen aus MongoDB.")
 
 try:
-    history_df = load_weather_history(city=history_city, days=history_period)
+    history_df = load_weather_history(location=selected_location, days=history_period)
 
 except PyMongoError as error:
     st.error(f"Fehler beim Laden der Historie: {error}")
