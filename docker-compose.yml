@@ -1,0 +1,65 @@
+services:
+  kafka:
+    image: docker.io/apache/kafka:4.3.1
+    container_name: local-kafka
+    hostname: kafka
+
+    ports:
+      - "9092:9092"
+
+    environment:
+      # KRaft: Broker und Controller in einem Prozess
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: "broker,controller"
+
+      # Single-Node-KRaft-Cluster
+      KAFKA_CONTROLLER_QUORUM_VOTERS: "1@kafka:29093"
+      KAFKA_CONTROLLER_LISTENER_NAMES: "CONTROLLER"
+
+      # Listener
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT"
+
+      KAFKA_LISTENERS: "CONTROLLER://:29093,PLAINTEXT://:19092,PLAINTEXT_HOST://:9092"
+
+      KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://kafka:19092,PLAINTEXT_HOST://localhost:9092"
+
+      KAFKA_INTER_BROKER_LISTENER_NAME: "PLAINTEXT"
+
+      # Feste Cluster-ID für lokale Entwicklung
+      CLUSTER_ID: "4L6g3nShT-eMCtK--X86sw"
+
+      # Für einen einzelnen Broker notwendig
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+
+      # Kafka 4.x Share Groups
+      KAFKA_SHARE_COORDINATOR_STATE_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_SHARE_COORDINATOR_STATE_TOPIC_MIN_ISR: 1
+
+      KAFKA_LOG_DIRS: "/tmp/kraft-combined-logs"
+
+    restart: unless-stopped
+
+
+  mongodb:
+    image: docker.io/library/mongo:8.0
+    container_name: local-mongodb
+    hostname: mongodb
+
+    ports:
+      - "27017:27017"
+
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_USERNAME:?MONGO_USERNAME fehlt}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASSWORD:?MONGO_PASSWORD fehlt}
+
+    volumes:
+      - mongodb-data:/data/db
+
+    restart: unless-stopped
+
+
+volumes:
+  mongodb-data:

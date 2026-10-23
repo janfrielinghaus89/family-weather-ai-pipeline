@@ -1,0 +1,7 @@
+kafka-python-ng
+requests
+ollama
+pymongo
+pydantic>=2
+streamlit
+python-dotenv
