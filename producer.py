@@ -1,193 +1,135 @@
+"""Publish weather observations for saved locations every interval."""
+
 import argparse
 import json
 import logging
+import os
 import time
 from datetime import datetime, timezone
-import os
-from dotenv import load_dotenv
+from urllib.parse import quote_plus
 
 import requests
+from dotenv import load_dotenv
 from kafka import KafkaProducer
-from kafka.errors import KafkaError
+from pymongo import MongoClient
+
+from location_service import list_tracked_locations
 
 load_dotenv()
-
-# Konfiguration
-KAFKA_SERVER = os.getenv("KAFKA_BOOTSTRAP_SERVER", "localhost:9092")
-KAFKA_TOPIC = "weather_data"
-INTERVAL_SECONDS = 300
-
-GEOCODING_URL = "https://geocoding-api.open-meteo.com/v1/search"
-WEATHER_URL = "https://api.open-meteo.com/v1/forecast"
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s"
 )
 logger = logging.getLogger(__name__)
 
+WEATHER_URL = "https://api.open-meteo.com/v1/forecast"
+TOPIC = "weather_data"
 
-def get_coordinates(city: str) -> dict:
-    """Ermittelt die Koordinaten einer Stadt."""
 
-    response = requests.get(
-        GEOCODING_URL, params={"name": city, "count": 1, "language": "de"}, timeout=10
-    )
-    response.raise_for_status()
-
-    results = response.json().get("results", [])
-
-    if not results:
-        raise ValueError(f"Stadt nicht gefunden: {city}")
-
-    location = results[0]
-
-    return {
-        "city": location["name"],
-        "country": location.get("country", ""),
-        "latitude": location["latitude"],
-        "longitude": location["longitude"],
-    }
+def mongo_uri() -> str:
+    user = quote_plus(os.environ["MONGO_USERNAME"])
+    password = quote_plus(os.environ["MONGO_PASSWORD"])
+    host = os.getenv("MONGO_HOST", "127.0.0.1")
+    port = os.getenv("MONGO_PORT", "27017")
+    return f"mongodb://{user}:{password}@{host}:{port}/?authSource=admin"
 
 
 def get_weather(location: dict) -> dict:
-    """Ruft Wetterdaten von Open-Meteo ab."""
-
-    params = {
-        "latitude": location["latitude"],
-        "longitude": location["longitude"],
-        "current": ("temperature_2m,wind_speed_10m,weather_code"),
-        "hourly": "precipitation_probability",
-        "forecast_days": 1,
-        "timezone": "UTC",
-    }
-
-    response = requests.get(WEATHER_URL, params=params, timeout=10)
+    """Current weather + probability for current UTC hour."""
+    response = requests.get(
+        WEATHER_URL,
+        params={
+            "latitude": location["latitude"],
+            "longitude": location["longitude"],
+            "current": "temperature_2m,wind_speed_10m,weather_code",
+            "hourly": "precipitation_probability",
+            "forecast_days": 2,
+            "timezone": "UTC",
+        },
+        timeout=15,
+    )
     response.raise_for_status()
-
     data = response.json()
-
     current = data["current"]
     hourly = data["hourly"]
-
-    # Der aktuelle Zeitpunkt wird auf die Stunde gekürzt.
-    # So finden wir die passende Niederschlagsprognose.
-    current_hour = current["time"][:13]
-
-    hour_index = next(
-        (
-            i
-            for i, timestamp in enumerate(hourly["time"])
-            if timestamp[:13] == current_hour
-        ),
-        None,
+    hour = current["time"][:13]
+    index = next(
+        (i for i, value in enumerate(hourly["time"]) if value[:13] == hour), None
     )
-
-    if hour_index is None:
-        raise ValueError("Keine Niederschlagsprognose für die aktuelle Stunde")
-
-    rain_probability = hourly["precipitation_probability"][hour_index]
-
+    if index is None:
+        raise ValueError("No hourly precipitation forecast for current conditions")
     return {
-        "city": location["city"],
-        "country": location["country"],
+        "location_id": location["_id"],
+        "city": location["name"],
+        "country": location.get("country", ""),
         "latitude": location["latitude"],
         "longitude": location["longitude"],
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "weather_time": current["time"] + "Z",
         "temperature_c": current["temperature_2m"],
-        "rain_probability_percent": rain_probability,
+        "rain_probability_percent": hourly["precipitation_probability"][index],
         "wind_speed_kmh": current["wind_speed_10m"],
         "weather_code": current["weather_code"],
     }
 
 
-def create_producer() -> KafkaProducer:
-    """Erstellt eine Verbindung zum Kafka-Broker."""
-
-    return KafkaProducer(
-        bootstrap_servers=[KAFKA_SERVER],
-        value_serializer=lambda value: json.dumps(value, ensure_ascii=False).encode(
-            "utf-8"
-        ),
-        key_serializer=lambda key: key.encode("utf-8"),
-        acks="all",
-        retries=3,
+def main() -> None:
+    parser = argparse.ArgumentParser(description="WeatherWatcher multi-city producer")
+    parser.add_argument(
+        "--once", action="store_true", help="Run one poll cycle and exit"
     )
+    parser.add_argument(
+        "--interval",
+        type=int,
+        default=int(os.getenv("WEATHER_INTERVAL_SECONDS", "300")),
+    )
+    args = parser.parse_args()
+    if args.interval < 30:
+        parser.error("--interval must be at least 30 seconds")
 
-
-def run(city: str) -> None:
-    """Startet die Wetterdaten-Pipeline."""
-
-    logger.info("Suche Koordinaten für %s", city)
-
-    location = get_coordinates(city)
-
-    logger.info("Stadt gefunden: %s, %s", location["city"], location["country"])
-
-    producer = create_producer()
-
-    logger.info("Kafka-Verbindung hergestellt")
-    logger.info("Topic: %s", KAFKA_TOPIC)
-
-    try:
-        while True:
-            try:
-                weather = get_weather(location)
-
-                # Asynchron senden, auf Bestätigung warten.
-                future = producer.send(
-                    topic=KAFKA_TOPIC, key=location["city"], value=weather
-                )
-
-                metadata = future.get(timeout=15)
-
-                logger.info(
-                    "Gesendet | Stadt: %s | Temperatur: %s °C"
-                    " | Regenwahrscheinlichkeit: %s %%"
-                    " | Wind: %s km/h | Wettercode: %s"
-                    " | Partition: %s | Offset: %s",
-                    weather["city"],
-                    weather["temperature_c"],
-                    weather["rain_probability_percent"],
-                    weather["wind_speed_kmh"],
-                    weather["weather_code"],
-                    metadata.partition,
-                    metadata.offset,
-                )
-
-            except (
-                requests.RequestException,
-                KafkaError,
-                ValueError,
-                KeyError,
-                IndexError,
-            ) as error:
-                logger.error("Fehler: %s", error)
-
-            time.sleep(INTERVAL_SECONDS)
-
-    except KeyboardInterrupt:
-        logger.info("Producer wird beendet ...")
-
-    finally:
-        producer.flush()
-        producer.close()
-        logger.info("Kafka-Verbindung geschlossen")
+    with MongoClient(mongo_uri(), serverSelectionTimeoutMS=10000) as mongo:
+        db = mongo[os.getenv("MONGO_DATABASE", "weather_project")]
+        mongo.admin.command("ping")
+        producer = KafkaProducer(
+            bootstrap_servers=[os.getenv("KAFKA_BOOTSTRAP_SERVER", "127.0.0.1:9092")],
+            value_serializer=lambda value: json.dumps(value, ensure_ascii=False).encode(
+                "utf-8"
+            ),
+            key_serializer=lambda value: value.encode("utf-8"),
+            acks="all",
+            retries=3,
+        )
+        try:
+            while True:
+                locations = list_tracked_locations(db)
+                if not locations:
+                    logger.warning("No tracked locations. Add one in the dashboard.")
+                for location in locations:
+                    try:
+                        weather = get_weather(location)
+                        metadata = producer.send(
+                            TOPIC,
+                            key=str(location["_id"]),
+                            value=weather,
+                        ).get(timeout=20)
+                        logger.info(
+                            "Published %s (%s) offset=%s",
+                            location["name"],
+                            location["_id"],
+                            metadata.offset,
+                        )
+                    except Exception:
+                        logger.exception("Failed to publish %s", location.get("name"))
+                if args.once:
+                    break
+                time.sleep(args.interval)
+        finally:
+            producer.flush(timeout=20)
+            producer.close()
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Open-Meteo Kafka Weather Producer")
-    parser.add_argument(
-        "--city",
-        type=str,
-        default="Berlin",
-        help="Stadtname, beispielsweise Berlin oder München",
-    )
-
-    args = parser.parse_args()
-
     try:
-        run(args.city)
-    except (requests.RequestException, KafkaError, ValueError) as error:
-        logger.error("Start fehlgeschlagen: %s", error)
-        raise SystemExit(1)
+        main()
+    except KeyboardInterrupt:
+        logger.info("Producer stopped")
