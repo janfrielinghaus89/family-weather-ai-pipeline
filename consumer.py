@@ -1,4 +1,3 @@
-
 import json
 import logging
 from datetime import datetime, timezone
@@ -7,10 +6,11 @@ from dotenv import load_dotenv
 from confluent_kafka import Consumer, KafkaException
 
 from ollama import Client
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field
 from pymongo import MongoClient
 from pymongo.errors import DuplicateKeyError
 from urllib.parse import quote_plus
+
 load_dotenv()
 
 # ==========================================
@@ -35,8 +35,7 @@ MONGO_DATABASE = "weather_project"
 MONGO_COLLECTION = "weather_analysis"
 
 logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(message)s"
+    level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s"
 )
 logger = logging.getLogger(__name__)
 
@@ -44,6 +43,7 @@ logger = logging.getLogger(__name__)
 # ==========================================
 # KI-Antwortformat
 # ==========================================
+
 
 class Activity(BaseModel):
     name: str
@@ -55,20 +55,15 @@ class WeatherAnalysis(BaseModel):
     sentiment_score: int = Field(ge=1, le=10)
     sentiment_label: str
     summary: str
-    activities: list[Activity] = Field(
-        min_length=3,
-        max_length=3
-    )
+    activities: list[Activity] = Field(min_length=3, max_length=3)
 
 
 # ==========================================
 # Ollama-Auswertung
 # ==========================================
 
-def analyze_weather(
-    weather: dict,
-    ollama_client: Client
-) -> WeatherAnalysis:
+
+def analyze_weather(weather: dict, ollama_client: Client) -> WeatherAnalysis:
     """Analysiert Wetterdaten mit lokalem Ollama."""
 
     prompt = f"""
@@ -115,44 +110,31 @@ REGELN:
                     "Familien- und Wetterassistent. "
                     "Bewerte Wetterbedingungen sachlich und "
                     "empfiehl sichere Aktivitäten für Familien."
-                )
+                ),
             },
-            {
-                "role": "user",
-                "content": prompt
-            }
+            {"role": "user", "content": prompt},
         ],
         format=WeatherAnalysis.model_json_schema(),
-        options={
-            "temperature": 0.2
-        },
-        stream=False
+        options={"temperature": 0.2},
+        stream=False,
     )
 
-    return WeatherAnalysis.model_validate_json(
-        response.message.content
-    )
+    return WeatherAnalysis.model_validate_json(response.message.content)
 
 
 # ==========================================
 # MongoDB-Speicherung
 # ==========================================
 
+
 def save_to_mongodb(
-    collection,
-    weather: dict,
-    analysis: WeatherAnalysis,
-    message
+    collection, weather: dict, analysis: WeatherAnalysis, message
 ) -> None:
     """Speichert Wetterdaten und KI-Auswertung."""
 
     # Kafka-Position als eindeutige Dokument-ID:
     # Bei erneutem Verarbeiten keine doppelten Einträge.
-    document_id = (
-        f"{message.topic()}:"
-        f"{message.partition()}:"
-        f"{message.offset()}"
-    )
+    document_id = f"{message.topic()}:{message.partition()}:{message.offset()}"
 
     document = {
         "_id": document_id,
@@ -164,23 +146,21 @@ def save_to_mongodb(
             "kafka_topic": message.topic(),
             "kafka_partition": message.partition(),
             "kafka_offset": message.offset(),
-            "processed_at": datetime.now(timezone.utc)
-        }
+            "processed_at": datetime.now(timezone.utc),
+        },
     }
 
     try:
         collection.insert_one(document)
 
     except DuplicateKeyError:
-        logger.warning(
-            "Nachricht %s bereits gespeichert",
-            document_id
-        )
+        logger.warning("Nachricht %s bereits gespeichert", document_id)
 
 
 # ==========================================
 # Kafka-Consumer
 # ==========================================
+
 
 def run_consumer() -> None:
     """Liest Kafka-Nachrichten und verarbeitet sie."""
@@ -189,16 +169,9 @@ def run_consumer() -> None:
 
     logger.info("Ollama Host: %s", OLLAMA_HOST)
     logger.info("Ollama Modell: %s", OLLAMA_MODEL)
-    ollama_client = Client(
-        host=OLLAMA_HOST,
-        timeout=120,
-        trust_env=False
-    )
+    ollama_client = Client(host=OLLAMA_HOST, timeout=120, trust_env=False)
 
-    mongo_client = MongoClient(
-        MONGO_URI,
-        serverSelectionTimeoutMS=10000
-    )
+    mongo_client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=10000)
 
     consumer = None
 
@@ -206,28 +179,24 @@ def run_consumer() -> None:
         # MongoDB-Verbindung überprüfen
         mongo_client.admin.command("ping")
 
-        collection = mongo_client[
-            MONGO_DATABASE
-        ][MONGO_COLLECTION]
+        collection = mongo_client[MONGO_DATABASE][MONGO_COLLECTION]
 
         logger.info("MongoDB verbunden")
 
-        consumer = Consumer({
-            "bootstrap.servers": KAFKA_SERVER,
-            "group.id": KAFKA_GROUP,
-            "auto.offset.reset": "earliest",
-            "enable.auto.commit": False,
-            "max.poll.interval.ms": 900000
-        })
+        consumer = Consumer(
+            {
+                "bootstrap.servers": KAFKA_SERVER,
+                "group.id": KAFKA_GROUP,
+                "auto.offset.reset": "earliest",
+                "enable.auto.commit": False,
+                "max.poll.interval.ms": 900000,
+            }
+        )
 
         consumer.subscribe([KAFKA_TOPIC])
 
-        logger.info(
-            "Warte auf Nachrichten aus Topic '%s' ...",
-            KAFKA_TOPIC
-        )
+        logger.info("Warte auf Nachrichten aus Topic '%s' ...", KAFKA_TOPIC)
 
-        
         while True:
             message = consumer.poll(timeout=1.0)
 
@@ -237,58 +206,35 @@ def run_consumer() -> None:
             if message.error():
                 raise KafkaException(message.error())
 
-            weather = json.loads(
-                message.value().decode("utf-8")
-            )
+            weather = json.loads(message.value().decode("utf-8"))
 
             logger.info(
                 "Wetterdaten empfangen: %s | Offset: %s",
                 weather.get("city"),
-                message.offset()
+                message.offset(),
             )
 
             logger.info("Analysiere mit %s ...", OLLAMA_MODEL)
 
             # KI-Auswertung
-            analysis = analyze_weather(
-                weather,
-                ollama_client
-            )
+            analysis = analyze_weather(weather, ollama_client)
 
             logger.info(
                 "Sentiment: %s/10 | %s",
                 analysis.sentiment_score,
-                analysis.sentiment_label
+                analysis.sentiment_label,
             )
 
             # MongoDB
-            save_to_mongodb(
-                collection,
-                weather,
-                analysis,
-                message
-            )
+            save_to_mongodb(collection, weather, analysis, message)
 
             # Offset erst nach erfolgreicher Speicherung bestätigen
-            consumer.commit(
-                message=message,
-                asynchronous=False
-            )
+            consumer.commit(message=message, asynchronous=False)
 
-            logger.info(
-                "MongoDB gespeichert und Kafka bestätigt"
-            )
+            logger.info("MongoDB gespeichert und Kafka bestätigt")
 
-            for index, activity in enumerate(
-                analysis.activities,
-                start=1
-            ):
-                logger.info(
-                    "Aktivität %s: %s",
-                    index,
-                    activity.name
-                )
-
+            for index, activity in enumerate(analysis.activities, start=1):
+                logger.info("Aktivität %s: %s", index, activity.name)
 
     except KeyboardInterrupt:
         logger.info("Consumer wird beendet ...")

@@ -1,16 +1,16 @@
-
 import os
 from datetime import datetime, timedelta, timezone
 from html import escape
-import os
 from dotenv import load_dotenv
 from urllib.parse import quote_plus
+from weather_utils import format_number, get_sentiment_style
 
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 from pymongo import MongoClient
 from pymongo.errors import PyMongoError
+
 load_dotenv()
 
 # ==========================================
@@ -29,24 +29,18 @@ DATABASE = "weather_project"
 COLLECTION = "weather_analysis"
 
 
-st.set_page_config(
-    page_title="Familienwetter",
-    page_icon="🌤️",
-    layout="wide"
-)
+st.set_page_config(page_title="Familienwetter", page_icon="🌤️", layout="wide")
 
 
 # ==========================================
 # MongoDB
 # ==========================================
 
+
 @st.cache_resource
 def get_database():
     """MongoDB-Verbindung für Streamlit wiederverwenden."""
-    client = MongoClient(
-        MONGO_URI,
-        serverSelectionTimeoutMS=5000
-    )
+    client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
     client.admin.command("ping")
     return client[DATABASE]
 
@@ -58,10 +52,7 @@ def get_available_cities() -> list[str]:
     # Städte aus dem Feld "city" auslesen
     cities = db[COLLECTION].distinct("city")
 
-    return sorted(
-        city for city in cities
-        if isinstance(city, str) and city.strip()
-    )
+    return sorted(city for city in cities if isinstance(city, str) and city.strip())
 
 
 def load_latest_weather(city: str | None = None):
@@ -73,31 +64,17 @@ def load_latest_weather(city: str | None = None):
     if city is not None:
         query["city"] = city
 
-    return db[COLLECTION].find_one(
-        filter=query,
-        sort=[("metadata.processed_at", -1)]
-    )
+    return db[COLLECTION].find_one(filter=query, sort=[("metadata.processed_at", -1)])
 
 
-
-def load_weather_history(
-    city: str | None,
-    days: int = 7
-) -> pd.DataFrame:
+def load_weather_history(city: str | None, days: int = 7) -> pd.DataFrame:
     """Lädt historische Wetter- und Sentiment-Daten."""
 
     db = get_database()
 
-    start_date = (
-        datetime.now(timezone.utc)
-        - timedelta(days=days)
-    )
+    start_date = datetime.now(timezone.utc) - timedelta(days=days)
 
-    query = {
-        "metadata.processed_at": {
-            "$gte": start_date
-        }
-    }
+    query = {"metadata.processed_at": {"$gte": start_date}}
 
     if city is not None:
         query["city"] = city
@@ -111,8 +88,8 @@ def load_weather_history(
                 "city": 1,
                 "weather": 1,
                 "ai_analysis.sentiment_score": 1,
-                "metadata.processed_at": 1
-            }
+                "metadata.processed_at": 1,
+            },
         )
         .sort("metadata.processed_at", 1)
         .limit(10000)
@@ -130,16 +107,16 @@ def load_weather_history(
         if not isinstance(timestamp, datetime):
             continue
 
-        records.append({
-            "timestamp": timestamp,
-            "city": document.get("city", "Unbekannt"),
-            "temperature": weather.get("temperature_c"),
-            "rain_probability": weather.get(
-                "rain_probability_percent"
-            ),
-            "wind_speed": weather.get("wind_speed_kmh"),
-            "sentiment": analysis.get("sentiment_score")
-        })
+        records.append(
+            {
+                "timestamp": timestamp,
+                "city": document.get("city", "Unbekannt"),
+                "temperature": weather.get("temperature_c"),
+                "rain_probability": weather.get("rain_probability_percent"),
+                "wind_speed": weather.get("wind_speed_kmh"),
+                "sentiment": analysis.get("sentiment_score"),
+            }
+        )
 
     columns = [
         "timestamp",
@@ -147,7 +124,7 @@ def load_weather_history(
         "temperature",
         "rain_probability",
         "wind_speed",
-        "sentiment"
+        "sentiment",
     ]
 
     df = pd.DataFrame(records, columns=columns)
@@ -156,54 +133,21 @@ def load_weather_history(
         return df
 
     # UTC-Zeitstempel korrekt interpretieren
-    df["timestamp"] = pd.to_datetime(
-        df["timestamp"],
-        utc=True
-    ).dt.tz_convert("Europe/Berlin")
+    df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True).dt.tz_convert(
+        "Europe/Berlin"
+    )
 
-    numeric_columns = [
-        "temperature",
-        "rain_probability",
-        "wind_speed",
-        "sentiment"
-    ]
+    numeric_columns = ["temperature", "rain_probability", "wind_speed", "sentiment"]
 
     for column in numeric_columns:
-        df[column] = pd.to_numeric(
-            df[column],
-            errors="coerce"
-        )
+        df[column] = pd.to_numeric(df[column], errors="coerce")
 
     return df.sort_values("timestamp")
-
 
 
 # ==========================================
 # Darstellung
 # ==========================================
-
-def format_number(value, suffix=""):
-    """Zahlen im deutschen Format darstellen."""
-    if value is None:
-        return "–"
-
-    try:
-        number = f"{float(value):.1f}".replace(".", ",")
-        return f"{number}{suffix}"
-    except (TypeError, ValueError):
-        return "–"
-
-
-def get_sentiment_style(score):
-    """Farbe und Bezeichnung des Sentiments bestimmen."""
-    if score > 7:
-        return "#166534", "#dcfce7", "Sehr gutes Wetter"
-
-    if score >= 5:
-        return "#854d0e", "#fef9c3", "Durchschnittliches Wetter"
-
-    return "#991b1b", "#fee2e2", "Ungünstiges Wetter"
-
 
 
 def create_history_chart(
@@ -212,76 +156,49 @@ def create_history_chart(
     title: str,
     color: str,
     unit: str,
-    y_range: list | None = None
+    y_range: list | None = None,
 ) -> go.Figure:
     """Erstellt ein interaktives Zeitreihendiagramm."""
 
     fig = go.Figure()
 
     # Separate Kurve pro Stadt
-    colors = [
-        color,
-        "#a855f7",
-        "#14b8a6",
-        "#eab308",
-        "#ef4444",
-        "#64748b"
-    ]
+    colors = [color, "#a855f7", "#14b8a6", "#eab308", "#ef4444", "#64748b"]
 
-    for index, (city, city_data) in enumerate(
-        df.groupby("city")
-    ):
+    for index, (city, city_data) in enumerate(df.groupby("city")):
         fig.add_trace(
             go.Scatter(
                 x=city_data["timestamp"],
                 y=city_data[column],
                 mode="lines+markers",
                 name=str(city),
-                line={
-                    "color": colors[index % len(colors)],
-                    "width": 3
-                },
+                line={"color": colors[index % len(colors)], "width": 3},
                 marker={"size": 5},
                 connectgaps=False,
                 hovertemplate=(
                     "%{x|%d.%m.%Y %H:%M}"
                     f"<br>{title}: %{{y:.1f}} {unit}"
                     "<extra>%{fullData.name}</extra>"
-                )
+                ),
             )
         )
 
     fig.update_layout(
         title=title,
         height=320,
-        margin={
-            "l": 10,
-            "r": 10,
-            "t": 55,
-            "b": 15
-        },
+        margin={"l": 10, "r": 10, "t": 55, "b": 15},
         hovermode="x unified",
         xaxis_title=None,
         yaxis_title=unit,
         showlegend=df["city"].nunique() > 1,
-        legend={
-            "orientation": "h",
-            "y": 1.15
-        }
+        legend={"orientation": "h", "y": 1.15},
     )
 
-    fig.update_xaxes(
-        showgrid=True,
-        rangeslider_visible=False
-    )
+    fig.update_xaxes(showgrid=True, rangeslider_visible=False)
 
-    fig.update_yaxes(
-        showgrid=True,
-        range=y_range
-    )
+    fig.update_yaxes(showgrid=True, range=y_range)
 
     return fig
-
 
 
 # ==========================================
@@ -290,25 +207,18 @@ def create_history_chart(
 
 st.title("🌤️ Familienwetter")
 st.caption(
-    "KI-gestützte Wetteranalyse mit "
-    "Open-Meteo · Apache Kafka · Ollama · MongoDB"
+    "KI-gestützte Wetteranalyse mit Open-Meteo · Apache Kafka · Ollama · MongoDB"
 )
 
-header_left, header_right = st.columns(
-    [4, 1],
-    vertical_alignment="center"
-)
+header_left, header_right = st.columns([4, 1], vertical_alignment="center")
 
 with header_left:
     st.subheader("Aktuelle Wetterübersicht")
 
 with header_right:
     refresh = st.button(
-        "🔄 Daten aktualisieren",
-        use_container_width=True,
-        type="primary"
+        "🔄 Daten aktualisieren", use_container_width=True, type="primary"
     )
-
 
 
 # ==========================================
@@ -333,13 +243,10 @@ try:
         options=city_options,
         index=0,
         key="selected_city",
-        help="Zeigt alle Städte an, für die Wetterdaten gespeichert wurden."
+        help="Zeigt alle Städte an, für die Wetterdaten gespeichert wurden.",
     )
 
-    city_filter = (
-        None if selected_city == "Alle Städte"
-        else selected_city
-    )
+    city_filter = None if selected_city == "Alle Städte" else selected_city
 
     # Neueste Wetteranalyse für den ausgewählten Filter laden
     document = load_latest_weather(city_filter)
@@ -351,8 +258,7 @@ except PyMongoError as error:
 
 if not document:
     st.warning(
-        "Noch keine Wetteranalysen vorhanden. "
-        "Bitte Producer und Consumer starten."
+        "Noch keine Wetteranalysen vorhanden. Bitte Producer und Consumer starten."
     )
     st.stop()
 
@@ -371,9 +277,7 @@ try:
 except (ValueError, TypeError):
     score = 0
 
-score_color, score_background, score_label = (
-    get_sentiment_style(score)
-)
+score_color, score_background, score_label = get_sentiment_style(score)
 
 
 # ==========================================
@@ -390,25 +294,13 @@ weather_code = weather.get("weather_code")
 col1, col2, col3 = st.columns(3)
 
 with col1:
-    st.metric(
-        "🌡️ Temperatur",
-        format_number(temperature, " °C"),
-        border=True
-    )
+    st.metric("🌡️ Temperatur", format_number(temperature, " °C"), border=True)
 
 with col2:
-    st.metric(
-        "🌧️ Regenwahrscheinlichkeit",
-        format_number(rain, " %"),
-        border=True
-    )
+    st.metric("🌧️ Regenwahrscheinlichkeit", format_number(rain, " %"), border=True)
 
 with col3:
-    st.metric(
-        "💨 Windgeschwindigkeit",
-        format_number(wind, " km/h"),
-        border=True
-    )
+    st.metric("💨 Windgeschwindigkeit", format_number(wind, " km/h"), border=True)
 
 
 # ==========================================
@@ -490,15 +382,12 @@ else:
         reason = activity.get("reason", "")
 
         # Bullet-Point mit Details
-        st.markdown(
-            f"- **{name}**"
-        )
+        st.markdown(f"- **{name}**")
         if description:
             st.write(description)
 
         if reason:
             st.caption(f"💡 {reason}")
-
 
 
 # ==========================================
@@ -509,10 +398,7 @@ st.divider()
 st.header("📈 Wetterhistorie")
 
 # Filter übernehmen
-history_city = (
-    None if selected_city == "Alle Städte"
-    else selected_city
-)
+history_city = None if selected_city == "Alle Städte" else selected_city
 
 filter_col, info_col = st.columns([2, 3])
 
@@ -521,23 +407,16 @@ with filter_col:
         "Zeitraum auswählen",
         options=[1, 7, 30, 90],
         format_func=lambda days: (
-            "Letzte 24 Stunden" if days == 1
-            else f"Letzte {days} Tage"
+            "Letzte 24 Stunden" if days == 1 else f"Letzte {days} Tage"
         ),
-        index=1
+        index=1,
     )
 
 with info_col:
-    st.caption(
-        "Die Diagramme verwenden gespeicherte "
-        "Wetteranalysen aus MongoDB."
-    )
+    st.caption("Die Diagramme verwenden gespeicherte Wetteranalysen aus MongoDB.")
 
 try:
-    history_df = load_weather_history(
-        city=history_city,
-        days=history_period
-    )
+    history_df = load_weather_history(city=history_city, days=history_period)
 
 except PyMongoError as error:
     st.error(f"Fehler beim Laden der Historie: {error}")
@@ -545,10 +424,7 @@ except PyMongoError as error:
 
 
 if history_df.empty:
-    st.info(
-        "Für diesen Zeitraum sind noch keine "
-        "historischen Wetterdaten vorhanden."
-    )
+    st.info("Für diesen Zeitraum sind noch keine historischen Wetterdaten vorhanden.")
 
 else:
     # Kennzahlen
@@ -557,24 +433,18 @@ else:
     with metric_1:
         average_temp = history_df["temperature"].mean()
         st.metric(
-            "Ø Temperatur",
-            f"{average_temp:.1f} °C"
-            if pd.notna(average_temp) else "–"
+            "Ø Temperatur", f"{average_temp:.1f} °C" if pd.notna(average_temp) else "–"
         )
 
     with metric_2:
         average_sentiment = history_df["sentiment"].mean()
         st.metric(
             "Ø Wetter-Sentiment",
-            f"{average_sentiment:.1f}/10"
-            if pd.notna(average_sentiment) else "–"
+            f"{average_sentiment:.1f}/10" if pd.notna(average_sentiment) else "–",
         )
 
     with metric_3:
-        st.metric(
-            "Gespeicherte Analysen",
-            len(history_df)
-        )
+        st.metric("Gespeicherte Analysen", len(history_df))
 
     # Temperatur
     fig_temp = create_history_chart(
@@ -582,14 +452,10 @@ else:
         column="temperature",
         title="Temperaturverlauf",
         color="#f97316",
-        unit="°C"
+        unit="°C",
     )
 
-    st.plotly_chart(
-        fig_temp,
-        width="stretch",
-        key="history_temperature"
-    )
+    st.plotly_chart(fig_temp, width="stretch", key="history_temperature")
 
     # Regenwahrscheinlichkeit
     fig_rain = create_history_chart(
@@ -598,14 +464,10 @@ else:
         title="Regenwahrscheinlichkeit",
         color="#3b82f6",
         unit="%",
-        y_range=[0, 100]
+        y_range=[0, 100],
     )
 
-    st.plotly_chart(
-        fig_rain,
-        width="stretch",
-        key="history_rain"
-    )
+    st.plotly_chart(fig_rain, width="stretch", key="history_rain")
 
     # KI-Sentiment
     fig_sentiment = create_history_chart(
@@ -614,24 +476,17 @@ else:
         title="KI-Wetter-Sentiment",
         color="#22c55e",
         unit="Score",
-        y_range=[1, 10]
+        y_range=[1, 10],
     )
 
-    st.plotly_chart(
-        fig_sentiment,
-        width="stretch",
-        key="history_sentiment"
-    )
+    st.plotly_chart(fig_sentiment, width="stretch", key="history_sentiment")
 
     # Rohdaten optional anzeigen
     with st.expander("📋 Historische Datensätze"):
         st.dataframe(
-            history_df.sort_values(
-                "timestamp",
-                ascending=False
-            ),
+            history_df.sort_values("timestamp", ascending=False),
             width="stretch",
-            hide_index=True
+            hide_index=True,
         )
 
 # ==========================================
@@ -647,9 +502,7 @@ if isinstance(processed_at, datetime):
     if processed_at.tzinfo is None:
         processed_at = processed_at.replace(tzinfo=timezone.utc)
 
-    local_time = processed_at.astimezone().strftime(
-        "%d.%m.%Y – %H:%M:%S %Z"
-    )
+    local_time = processed_at.astimezone().strftime("%d.%m.%Y – %H:%M:%S %Z")
 
     st.caption(f"🕒 Letzte KI-Verarbeitung: {local_time}")
 
@@ -662,7 +515,4 @@ with st.expander("🔍 Technische Details / Rohdaten"):
     st.write("**Kafka-Topic:**", metadata.get("kafka_topic", "–"))
     st.write("**Kafka-Offset:**", metadata.get("kafka_offset", "–"))
 
-    st.json({
-        "weather": weather,
-        "ai_analysis": analysis
-    })
+    st.json({"weather": weather, "ai_analysis": analysis})

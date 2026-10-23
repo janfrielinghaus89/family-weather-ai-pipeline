@@ -269,14 +269,46 @@ This preserves MongoDB's named volume. **Warning:** `podman compose down -v` als
 - [ ] Add AI-based clothing suggestions for children.
 - [ ] Add text field to search for specific town (maybe also PLZ)
 - [ ] Add configuration for user: amount of children, gender, maybe tags with activities they like
-- [ ] Add tests, linting, and CI.
+- [X] Add tests, linting, and CI.
 - [ ] Improve resilience for Ollama outages and invalid records.
-- [ ] Add a license and contribution guidelines.
+- [X] Add a license and contribution guidelines.
 
 ## Data sources and responsible use
 
 Weather and geocoding data come from [Open-Meteo](https://open-meteo.com/). Follow its applicable usage limits, terms, and attribution requirements. AI recommendations are informational; check current conditions and local safety guidance before taking a child outdoors.
 
-## License
+## Development & Quality Assurance
 
-**Not yet licensed.** A public GitHub repository is viewable by everyone but does not automatically grant reuse rights. Add a license (for example MIT) when you decide how others may use and contribute to the project.
+WeatherWatcher uses automated code quality checks to maintain consistent and reliable development standards.
+
+### Development Tools
+
+- **Ruff** — Python linting and code formatting.
+- **pytest** — Automated unit testing.
+- **GitHub Actions** — Continuous integration for pushes and pull requests.
+
+### Running Quality Checks
+
+Install development dependencies:
+
+```bash
+python -m pip install -r requirements-dev.txt
+```
+
+Run linting, formatting checks, and tests:
+
+```bash
+python -m ruff check .
+python -m ruff format --check .
+python -m pytest -q
+```
+
+These checks also run automatically through GitHub Actions.
+
+### Contributing
+
+Contributions, bug reports, and feature suggestions are welcome. Please read [CONTRIBUTING.md](CONTRIBUTING.md) before submitting a pull request.
+
+### License
+
+WeatherWatcher is distributed under the MIT License. See [LICENSE](LICENSE) for details.

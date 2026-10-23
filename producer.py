@@ -1,4 +1,3 @@
-
 import argparse
 import json
 import logging
@@ -22,8 +21,7 @@ GEOCODING_URL = "https://geocoding-api.open-meteo.com/v1/search"
 WEATHER_URL = "https://api.open-meteo.com/v1/forecast"
 
 logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(message)s"
+    level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s"
 )
 logger = logging.getLogger(__name__)
 
@@ -32,13 +30,7 @@ def get_coordinates(city: str) -> dict:
     """Ermittelt die Koordinaten einer Stadt."""
 
     response = requests.get(
-        GEOCODING_URL,
-        params={
-            "name": city,
-            "count": 1,
-            "language": "de"
-        },
-        timeout=10
+        GEOCODING_URL, params={"name": city, "count": 1, "language": "de"}, timeout=10
     )
     response.raise_for_status()
 
@@ -53,7 +45,7 @@ def get_coordinates(city: str) -> dict:
         "city": location["name"],
         "country": location.get("country", ""),
         "latitude": location["latitude"],
-        "longitude": location["longitude"]
+        "longitude": location["longitude"],
     }
 
 
@@ -63,21 +55,13 @@ def get_weather(location: dict) -> dict:
     params = {
         "latitude": location["latitude"],
         "longitude": location["longitude"],
-        "current": (
-            "temperature_2m,"
-            "wind_speed_10m,"
-            "weather_code"
-        ),
+        "current": ("temperature_2m,wind_speed_10m,weather_code"),
         "hourly": "precipitation_probability",
         "forecast_days": 1,
-        "timezone": "UTC"
+        "timezone": "UTC",
     }
 
-    response = requests.get(
-        WEATHER_URL,
-        params=params,
-        timeout=10
-    )
+    response = requests.get(WEATHER_URL, params=params, timeout=10)
     response.raise_for_status()
 
     data = response.json()
@@ -91,20 +75,17 @@ def get_weather(location: dict) -> dict:
 
     hour_index = next(
         (
-            i for i, timestamp in enumerate(hourly["time"])
+            i
+            for i, timestamp in enumerate(hourly["time"])
             if timestamp[:13] == current_hour
         ),
-        None
+        None,
     )
 
     if hour_index is None:
-        raise ValueError(
-            "Keine Niederschlagsprognose für die aktuelle Stunde"
-        )
+        raise ValueError("Keine Niederschlagsprognose für die aktuelle Stunde")
 
-    rain_probability = hourly[
-        "precipitation_probability"
-    ][hour_index]
+    rain_probability = hourly["precipitation_probability"][hour_index]
 
     return {
         "city": location["city"],
@@ -116,7 +97,7 @@ def get_weather(location: dict) -> dict:
         "temperature_c": current["temperature_2m"],
         "rain_probability_percent": rain_probability,
         "wind_speed_kmh": current["wind_speed_10m"],
-        "weather_code": current["weather_code"]
+        "weather_code": current["weather_code"],
     }
 
 
@@ -125,13 +106,12 @@ def create_producer() -> KafkaProducer:
 
     return KafkaProducer(
         bootstrap_servers=[KAFKA_SERVER],
-        value_serializer=lambda value: json.dumps(
-            value,
-            ensure_ascii=False
-        ).encode("utf-8"),
+        value_serializer=lambda value: json.dumps(value, ensure_ascii=False).encode(
+            "utf-8"
+        ),
         key_serializer=lambda key: key.encode("utf-8"),
         acks="all",
-        retries=3
+        retries=3,
     )
 
 
@@ -142,11 +122,7 @@ def run(city: str) -> None:
 
     location = get_coordinates(city)
 
-    logger.info(
-        "Stadt gefunden: %s, %s",
-        location["city"],
-        location["country"]
-    )
+    logger.info("Stadt gefunden: %s, %s", location["city"], location["country"])
 
     producer = create_producer()
 
@@ -160,9 +136,7 @@ def run(city: str) -> None:
 
                 # Asynchron senden, auf Bestätigung warten.
                 future = producer.send(
-                    topic=KAFKA_TOPIC,
-                    key=location["city"],
-                    value=weather
+                    topic=KAFKA_TOPIC, key=location["city"], value=weather
                 )
 
                 metadata = future.get(timeout=15)
@@ -178,7 +152,7 @@ def run(city: str) -> None:
                     weather["wind_speed_kmh"],
                     weather["weather_code"],
                     metadata.partition,
-                    metadata.offset
+                    metadata.offset,
                 )
 
             except (
@@ -186,7 +160,7 @@ def run(city: str) -> None:
                 KafkaError,
                 ValueError,
                 KeyError,
-                IndexError
+                IndexError,
             ) as error:
                 logger.error("Fehler: %s", error)
 
@@ -202,24 +176,18 @@ def run(city: str) -> None:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        description="Open-Meteo Kafka Weather Producer"
-    )
+    parser = argparse.ArgumentParser(description="Open-Meteo Kafka Weather Producer")
     parser.add_argument(
         "--city",
         type=str,
         default="Berlin",
-        help="Stadtname, beispielsweise Berlin oder München"
+        help="Stadtname, beispielsweise Berlin oder München",
     )
 
     args = parser.parse_args()
 
     try:
         run(args.city)
-    except (
-        requests.RequestException,
-        KafkaError,
-        ValueError
-    ) as error:
+    except (requests.RequestException, KafkaError, ValueError) as error:
         logger.error("Start fehlgeschlagen: %s", error)
         raise SystemExit(1)
