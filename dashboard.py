@@ -49,13 +49,33 @@ def get_database():
     return client[DATABASE]
 
 
-def load_latest_weather():
-    """Den zuletzt verarbeiteten Datensatz laden."""
+def get_available_cities() -> list[str]:
+    """Ermittelt alle Städte mit gespeicherten Wetterdaten."""
     db = get_database()
 
+    # Städte aus dem Feld "city" auslesen
+    cities = db[COLLECTION].distinct("city")
+
+    return sorted(
+        city for city in cities
+        if isinstance(city, str) and city.strip()
+    )
+
+
+def load_latest_weather(city: str | None = None):
+    """Lädt die neueste Wetteranalyse einer bestimmten Stadt."""
+    db = get_database()
+
+    query = {}
+
+    if city is not None:
+        query["city"] = city
+
     return db[COLLECTION].find_one(
+        filter=query,
         sort=[("metadata.processed_at", -1)]
     )
+
 
 
 # ==========================================
@@ -111,18 +131,44 @@ with header_right:
     )
 
 
+
 # ==========================================
-# Daten abrufen
+# Stadtfilter und Datenabruf
 # ==========================================
 
 try:
-    # Die Abfrage ist nicht gecacht.
-    # Jeder Buttonklick führt eine neue Ausführung aus.
-    document = load_latest_weather()
+    available_cities = get_available_cities()
+
+    if not available_cities:
+        st.warning(
+            "Noch keine Städte in MongoDB vorhanden. "
+            "Bitte Producer und Consumer starten."
+        )
+        st.stop()
+
+    # Auswahlmöglichkeiten dynamisch erstellen
+    city_options = ["Alle Städte"] + available_cities
+
+    selected_city = st.selectbox(
+        "📍 Stadt auswählen",
+        options=city_options,
+        index=0,
+        key="selected_city",
+        help="Zeigt alle Städte an, für die Wetterdaten gespeichert wurden."
+    )
+
+    city_filter = (
+        None if selected_city == "Alle Städte"
+        else selected_city
+    )
+
+    # Neueste Wetteranalyse für den ausgewählten Filter laden
+    document = load_latest_weather(city_filter)
 
 except PyMongoError as error:
     st.error(f"MongoDB ist nicht erreichbar: {error}")
     st.stop()
+
 
 if not document:
     st.warning(
