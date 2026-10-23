@@ -6,3 +6,5 @@ pydantic>=2
 streamlit
 python-dotenv
 confluent-kafka
+pandas
+plotly

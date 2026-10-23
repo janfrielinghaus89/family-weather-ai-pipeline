@@ -42,6 +42,21 @@ Kafka and MongoDB run in **Podman** containers. The Python applications and Olla
 - Shows the latest processed observation in a Streamlit dashboard, with manual refresh.
 - Commits Kafka offsets after successful database persistence; uses topic/partition/offset as a stable MongoDB document ID to avoid duplicates on replay.
 
+### Historical Weather Analytics
+
+The Streamlit dashboard provides interactive historical weather analytics powered by **Plotly and MongoDB**.
+
+Features include:
+- **Temperature History:** Interactive charts displaying temperature changes over time.
+- **Precipitation Probability:** Historical rain probability visualization.
+- **AI Weather Sentiment:** Track AI-generated weather sentiment scores (1–10).
+- **Time Range Selection:** Filter data by the last 24 hours, 7 days, 30 days, or 90 days.
+- **City Filtering:** View historical data for individual cities or compare multiple cities.
+- **Historical Statistics:** Display average temperature, average sentiment, and the number of processed weather records.
+- **Data Exploration:** Expandable table displaying historical weather records.
+
+All visualizations use previously processed weather data stored in MongoDB. Charts update when the selected city or time range changes.
+
 ## Repository layout
 
 ```text
@@ -250,11 +265,13 @@ This preserves MongoDB's named volume. **Warning:** `podman compose down -v` als
 
 - [X] Move credentials and connection settings to `.env` / environment variables.
 - [X] Add city selection and filtering in the dashboard.
-- [ ] Add historical weather/sentiment graphs.
+- [X] Add historical weather/sentiment graphs.
+- [ ] Add AI-based clothing suggestions for children.
+- [ ] Add text field to search for specific town (maybe also PLZ)
+- [ ] Add configuration for user: amount of children, gender, maybe tags with activities they like
 - [ ] Add tests, linting, and CI.
 - [ ] Improve resilience for Ollama outages and invalid records.
 - [ ] Add a license and contribution guidelines.
-- [ ] Add clothing suggestions for children.
 
 ## Data sources and responsible use
 
