@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 from pymongo import MongoClient
 from pymongo.errors import DuplicateKeyError
 from urllib.parse import quote_plus
+from config import OLLAMA_HOST, OLLAMA_MODEL
 
 load_dotenv()
 
@@ -21,8 +22,6 @@ KAFKA_SERVER = os.getenv("KAFKA_BOOTSTRAP_SERVER", "127.0.0.1:9092")
 KAFKA_TOPIC = "weather_data"
 KAFKA_GROUP = "weather-ai-consumer"
 
-OLLAMA_HOST = "http://127.0.0.1:11434"
-OLLAMA_MODEL = "llama3.2:latest"
 
 MONGO_URI = (
     f"mongodb://{quote_plus(os.environ['MONGO_USERNAME'])}:"

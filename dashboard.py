@@ -10,6 +10,18 @@ import plotly.graph_objects as go
 import streamlit as st
 from pymongo import MongoClient
 from pymongo.errors import PyMongoError
+from pydantic import ValidationError
+from family import (
+    Child,
+    FamilyProfile,
+    FamilyAdvice,
+    generate_advice,
+    get_cached_advice,
+    load_profile,
+    recommendation_key,
+    save_advice,
+    save_profile,
+)
 
 load_dotenv()
 
@@ -388,6 +400,161 @@ else:
 
         if reason:
             st.caption(f"💡 {reason}")
+
+
+# ==========================================
+# Familienprofile & personalisierte KI
+# ==========================================
+
+st.divider()
+st.header("👨‍👩‍👧 Familienprofil & Kleidung")
+
+db = get_database()
+
+try:
+    profile = load_profile(db)
+except (ValidationError, PyMongoError) as error:
+    st.error(f"Familienprofil konnte nicht geladen werden: {error}")
+    st.stop()
+
+ACTIVITY_OPTIONS = [
+    "Spaziergänge",
+    "Spielplätze",
+    "Tiere",
+    "Natur",
+    "Radfahren",
+    "Wandern",
+    "Wald",
+    "Parks",
+    "Wasser",
+    "Garten",
+]
+
+# Anzahl außerhalb des Formulars, damit zusätzliche
+# Kinderfelder direkt erscheinen können.
+child_count = st.number_input(
+    "Anzahl der Kinder", min_value=1, max_value=4, value=len(profile.children), step=1
+)
+
+with st.form("family_profile_form"):
+    children = []
+
+    for index in range(child_count):
+        st.subheader(f"Kind {index + 1}")
+
+        existing = (
+            profile.children[index]
+            if index < len(profile.children)
+            else Child(age_months=12)
+        )
+
+        age = st.number_input(
+            "Alter in Monaten",
+            min_value=0,
+            max_value=216,
+            value=existing.age_months,
+            step=1,
+            key=f"child_age_{index}",
+        )
+
+        gender_options = ["Keine Angabe", "Weiblich", "Männlich", "Divers"]
+
+        gender = st.selectbox(
+            "Geschlecht (optional)",
+            options=gender_options,
+            index=(
+                gender_options.index(existing.gender)
+                if existing.gender in gender_options
+                else 0
+            ),
+            key=f"child_gender_{index}",
+        )
+
+        children.append(Child(age_months=age, gender=gender))
+
+    interests = st.multiselect(
+        "Bevorzugte Aktivitäten",
+        options=ACTIVITY_OPTIONS,
+        default=[item for item in profile.interests if item in ACTIVITY_OPTIONS],
+    )
+
+    submitted = st.form_submit_button("💾 Familienprofil speichern", type="primary")
+
+if submitted:
+    new_profile = FamilyProfile(children=children, interests=interests)
+
+    try:
+        save_profile(db, new_profile)
+    except PyMongoError as error:
+        st.error(f"Speichern fehlgeschlagen: {error}")
+    else:
+        st.success("Familienprofil gespeichert.")
+        st.rerun()
+
+
+# ==========================================
+# Personalisierte KI-Auswertung
+# ==========================================
+
+st.subheader("🧥 Individuelle Empfehlungen")
+
+st.caption(
+    "Die Empfehlungen berücksichtigen das gespeicherte "
+    "Familienprofil und die aktuell ausgewählten Wetterdaten."
+)
+
+cache_key = recommendation_key(document["_id"], profile)
+
+try:
+    cached = get_cached_advice(db, cache_key)
+except PyMongoError as error:
+    st.error(f"Empfehlungen konnten nicht geladen werden: {error}")
+    cached = None
+
+if st.button("✨ Empfehlungen generieren", type="primary"):
+    if cached is None:
+        with st.spinner("Ollama analysiert die Wetterlage ..."):
+            try:
+                advice = generate_advice(weather, profile)
+
+                save_advice(db, cache_key, document["_id"], profile, advice)
+
+                st.success("Empfehlungen gespeichert.")
+                st.rerun()
+
+            except Exception as error:
+                st.error(f"KI-Auswertung fehlgeschlagen: {error}")
+    else:
+        st.info("Für dieses Wetter und Familienprofil existieren bereits Empfehlungen.")
+
+
+# ==========================================
+# Ergebnisse anzeigen
+# ==========================================
+
+if cached is not None:
+    advice = FamilyAdvice.model_validate(cached["advice"])
+
+    st.info(advice.summary)
+
+    st.markdown("#### Kleidungsempfehlungen")
+
+    for child_advice in sorted(advice.clothing, key=lambda item: item.child_number):
+        with st.container(border=True):
+            st.markdown(f"**👶 Kind {child_advice.child_number}**")
+
+            for clothing_item in child_advice.clothing:
+                st.markdown(f"- {clothing_item}")
+
+            st.caption(child_advice.explanation)
+
+    st.markdown("#### 🌳 Personalisierte Aktivitäten")
+
+    for activity in advice.activities:
+        st.markdown(f"- {activity}")
+
+else:
+    st.info("Speichere dein Familienprofil und klicke auf 'Empfehlungen generieren'.")
 
 
 # ==========================================
