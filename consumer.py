@@ -4,9 +4,8 @@ import logging
 from datetime import datetime, timezone
 import os
 from dotenv import load_dotenv
+from confluent_kafka import Consumer, KafkaException
 
-from kafka import KafkaConsumer
-from kafka.errors import KafkaError
 from ollama import Client
 from pydantic import BaseModel, Field, ValidationError
 from pymongo import MongoClient
@@ -18,12 +17,12 @@ load_dotenv()
 # Konfiguration
 # ==========================================
 
-KAFKA_SERVER = os.getenv("KAFKA_BOOTSTRAP_SERVER", "localhost:9092")
+KAFKA_SERVER = os.getenv("KAFKA_BOOTSTRAP_SERVER", "127.0.0.1:9092")
 KAFKA_TOPIC = "weather_data"
 KAFKA_GROUP = "weather-ai-consumer"
 
-OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.2")
+OLLAMA_HOST = "http://127.0.0.1:11434"
+OLLAMA_MODEL = "llama3.2:latest"
 
 MONGO_URI = (
     f"mongodb://{quote_plus(os.environ['MONGO_USERNAME'])}:"
@@ -150,9 +149,9 @@ def save_to_mongodb(
     # Kafka-Position als eindeutige Dokument-ID:
     # Bei erneutem Verarbeiten keine doppelten Einträge.
     document_id = (
-        f"{message.topic}:"
-        f"{message.partition}:"
-        f"{message.offset}"
+        f"{message.topic()}:"
+        f"{message.partition()}:"
+        f"{message.offset()}"
     )
 
     document = {
@@ -162,9 +161,9 @@ def save_to_mongodb(
         "ai_analysis": analysis.model_dump(),
         "metadata": {
             "model": OLLAMA_MODEL,
-            "kafka_topic": message.topic,
-            "kafka_partition": message.partition,
-            "kafka_offset": message.offset,
+            "kafka_topic": message.topic(),
+            "kafka_partition": message.partition(),
+            "kafka_offset": message.offset(),
             "processed_at": datetime.now(timezone.utc)
         }
     }
@@ -188,9 +187,12 @@ def run_consumer() -> None:
 
     logger.info("Starte Kafka Weather AI Consumer")
 
+    logger.info("Ollama Host: %s", OLLAMA_HOST)
+    logger.info("Ollama Modell: %s", OLLAMA_MODEL)
     ollama_client = Client(
         host=OLLAMA_HOST,
-        timeout=120
+        timeout=120,
+        trust_env=False
     )
 
     mongo_client = MongoClient(
@@ -210,46 +212,44 @@ def run_consumer() -> None:
 
         logger.info("MongoDB verbunden")
 
-        consumer = KafkaConsumer(
-            KAFKA_TOPIC,
-            bootstrap_servers=[KAFKA_SERVER],
-            group_id=KAFKA_GROUP,
+        consumer = Consumer({
+            "bootstrap.servers": KAFKA_SERVER,
+            "group.id": KAFKA_GROUP,
+            "auto.offset.reset": "earliest",
+            "enable.auto.commit": False,
+            "max.poll.interval.ms": 900000
+        })
 
-            # Nachrichten erst nach Speicherung bestätigen
-            enable_auto_commit=False,
-
-            # Beim ersten Start vorhandene Nachrichten lesen
-            auto_offset_reset="earliest",
-
-            # Eine Nachricht pro Poll verarbeiten
-            max_poll_records=1,
-
-            # Genügend Zeit für lokale KI-Verarbeitung
-            max_poll_interval_ms=900000,
-
-            value_deserializer=lambda message: json.loads(
-                message.decode("utf-8")
-            )
-        )
+        consumer.subscribe([KAFKA_TOPIC])
 
         logger.info(
             "Warte auf Nachrichten aus Topic '%s' ...",
             KAFKA_TOPIC
         )
 
-        for message in consumer:
+        
+        while True:
+            message = consumer.poll(timeout=1.0)
 
-            weather = message.value
+            if message is None:
+                continue
+
+            if message.error():
+                raise KafkaException(message.error())
+
+            weather = json.loads(
+                message.value().decode("utf-8")
+            )
 
             logger.info(
                 "Wetterdaten empfangen: %s | Offset: %s",
                 weather.get("city"),
-                message.offset
+                message.offset()
             )
 
-            # 1. KI-Auswertung
             logger.info("Analysiere mit %s ...", OLLAMA_MODEL)
 
+            # KI-Auswertung
             analysis = analyze_weather(
                 weather,
                 ollama_client
@@ -261,7 +261,7 @@ def run_consumer() -> None:
                 analysis.sentiment_label
             )
 
-            # 2. MongoDB-Speicherung
+            # MongoDB
             save_to_mongodb(
                 collection,
                 weather,
@@ -269,8 +269,11 @@ def run_consumer() -> None:
                 message
             )
 
-            # 3. Erst nach erfolgreichem Speichern committen
-            consumer.commit()
+            # Offset erst nach erfolgreicher Speicherung bestätigen
+            consumer.commit(
+                message=message,
+                asynchronous=False
+            )
 
             logger.info(
                 "MongoDB gespeichert und Kafka bestätigt"
@@ -286,6 +289,7 @@ def run_consumer() -> None:
                     activity.name
                 )
 
+
     except KeyboardInterrupt:
         logger.info("Consumer wird beendet ...")
 
@@ -299,7 +303,7 @@ def run_consumer() -> None:
 
     finally:
         if consumer is not None:
-            consumer.close(autocommit=False)
+            consumer.close()
 
         mongo_client.close()
         logger.info("Verbindungen geschlossen")

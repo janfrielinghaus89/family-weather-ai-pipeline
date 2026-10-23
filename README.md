@@ -248,12 +248,13 @@ This preserves MongoDB's named volume. **Warning:** `podman compose down -v` als
 
 ## Roadmap
 
-- [ ] Move credentials and connection settings to `.env` / environment variables.
-- [ ] Add city selection and filtering in the dashboard.
+- [X] Move credentials and connection settings to `.env` / environment variables.
+- [X] Add city selection and filtering in the dashboard.
 - [ ] Add historical weather/sentiment graphs.
 - [ ] Add tests, linting, and CI.
 - [ ] Improve resilience for Ollama outages and invalid records.
 - [ ] Add a license and contribution guidelines.
+- [ ] Add clothing suggestions for children.
 
 ## Data sources and responsible use
 
