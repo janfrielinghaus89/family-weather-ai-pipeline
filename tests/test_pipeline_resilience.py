@@ -81,6 +81,7 @@ def test_retry_exhausted():
             sleep=lambda _: None,
         )
 
+
 def test_already_processed_message():
     collection = MagicMock()
     message = MagicMock()
@@ -89,13 +90,9 @@ def test_already_processed_message():
     message.partition.return_value = 0
     message.offset.return_value = 262
 
-    collection.find_one.return_value = {
-        "_id": "weather_data:0:262"
-    }
+    collection.find_one.return_value = {"_id": "weather_data:0:262"}
 
-    assert message_already_processed(
-        collection, message
-    ) is True
+    assert message_already_processed(collection, message) is True
 
     collection.find_one.assert_called_once_with(
         {"_id": "weather_data:0:262"},
@@ -113,6 +110,4 @@ def test_new_message():
 
     collection.find_one.return_value = None
 
-    assert message_already_processed(
-        collection, message
-    ) is False
+    assert message_already_processed(collection, message) is False

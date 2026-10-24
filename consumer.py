@@ -172,21 +172,20 @@ def save_to_mongodb(
 
 
 # ==========================================
-# Message check 
+# Message check
 # ==========================================
 def message_already_processed(collection, message) -> bool:
     """Prüft, ob ein Kafka-Event bereits gespeichert wurde."""
 
-    document_id = (
-        f"{message.topic()}:"
-        f"{message.partition()}:"
-        f"{message.offset()}"
-    )
+    document_id = f"{message.topic()}:{message.partition()}:{message.offset()}"
 
-    return collection.find_one(
-        {"_id": document_id},
-        {"_id": 1},
-    ) is not None
+    return (
+        collection.find_one(
+            {"_id": document_id},
+            {"_id": 1},
+        )
+        is not None
+    )
 
 
 # ==========================================
@@ -317,7 +316,7 @@ def run_consumer() -> None:
 
             else:
                 # Cache-Miss: KI wie bisher aufrufen
-                
+
                 cache_status = "miss"
 
                 logger.info(
