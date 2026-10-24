@@ -12,6 +12,13 @@ from pymongo import MongoClient
 from pymongo.errors import DuplicateKeyError
 from urllib.parse import quote_plus
 from config import OLLAMA_HOST, OLLAMA_MODEL
+from time import perf_counter
+
+from ai_cache import (
+    get_cached_analysis,
+    store_cached_analysis,
+    weather_fingerprint,
+)
 
 from pipeline_resilience import (
     InvalidWeatherRecord,
@@ -161,7 +168,25 @@ def save_to_mongodb(
         collection.insert_one(document)
 
     except DuplicateKeyError:
-        logger.warning("Nachricht %s bereits gespeichert", document_id)
+        logger.info("Nachricht %s bereits gespeichert", document_id)
+
+
+# ==========================================
+# Message check 
+# ==========================================
+def message_already_processed(collection, message) -> bool:
+    """Prüft, ob ein Kafka-Event bereits gespeichert wurde."""
+
+    document_id = (
+        f"{message.topic()}:"
+        f"{message.partition()}:"
+        f"{message.offset()}"
+    )
+
+    return collection.find_one(
+        {"_id": document_id},
+        {"_id": 1},
+    ) is not None
 
 
 # ==========================================
@@ -188,6 +213,11 @@ def run_consumer() -> None:
 
         collection = mongo_client[MONGO_DATABASE][MONGO_COLLECTION]
 
+        cache_collection = mongo_client[MONGO_DATABASE]["ai_analysis_cache"]
+
+        cache_hits = 0
+        cache_misses = 0
+
         logger.info("MongoDB verbunden")
 
         consumer = Consumer(
@@ -212,6 +242,24 @@ def run_consumer() -> None:
 
             if message.error():
                 raise KafkaException(message.error())
+
+            # ==========================================
+            # Bereits verarbeitete Nachrichten überspringen
+            # ==========================================
+
+            if message_already_processed(collection, message):
+                logger.info(
+                    "SKIP | Nachricht %s:%s:%s bereits verarbeitet",
+                    message.topic(),
+                    message.partition(),
+                    message.offset(),
+                )
+
+                consumer.commit(
+                    message=message,
+                    asynchronous=False,
+                )
+                continue
 
             # 1. Wetterdaten validieren
             try:
@@ -240,19 +288,102 @@ def run_consumer() -> None:
             )
 
             # 2. Ollama mit Retry
-            analysis = retry_operation(
-                lambda: analyze_weather(
-                    weather,
-                    ollama_client,
-                ),
-                attempts=3,
-                initial_delay=2,
-                retry_exceptions=(
-                    ConnectionError,
-                    TimeoutError,
-                    httpx.TimeoutException,
-                    ResponseError,
-                ),
+
+            # ==========================================
+            # AI Response Cache
+            # ==========================================
+
+            fingerprint = weather_fingerprint(
+                weather,
+                OLLAMA_MODEL,
+            )
+
+            cached_analysis = get_cached_analysis(
+                cache_collection,
+                fingerprint,
+            )
+
+            if cached_analysis is not None:
+                # Cache-Hit: Kein Aufruf von Ollama nötig
+                analysis = WeatherAnalysis.model_validate(cached_analysis)
+                cache_hits += 1
+                cache_status = "hit"
+
+                logger.info(
+                    "AI Cache HIT | %s | Fingerprint: %s",
+                    weather["city"],
+                    fingerprint[:12],
+                )
+
+            else:
+                # Cache-Miss: KI wie bisher aufrufen
+                
+                cache_status = "miss"
+
+                logger.info(
+                    "AI Cache MISS | %s | Starte %s",
+                    weather["city"],
+                    OLLAMA_MODEL,
+                )
+
+                start_time = perf_counter()
+
+                analysis = retry_operation(
+                    lambda: analyze_weather(
+                        weather,
+                        ollama_client,
+                    ),
+                    attempts=3,
+                    initial_delay=2,
+                    retry_exceptions=(
+                        ConnectionError,
+                        TimeoutError,
+                        httpx.TimeoutException,
+                        ResponseError,
+                    ),
+                )
+
+                inference_seconds = perf_counter() - start_time
+
+                logger.info(
+                    "KI-Auswertung abgeschlossen in %.2f Sekunden",
+                    inference_seconds,
+                )
+
+                store_cached_analysis(
+                    cache_collection,
+                    fingerprint,
+                    OLLAMA_MODEL,
+                    analysis.model_dump(),
+                )
+
+                cache_misses += 1
+
+            # ==========================================
+            # Bestehende MongoDB-Speicherung
+            # ==========================================
+
+            save_to_mongodb(
+                collection,
+                weather,
+                analysis,
+                message,
+            )
+
+            consumer.commit(
+                message=message,
+                asynchronous=False,
+            )
+
+            total = cache_hits + cache_misses
+            hit_rate = cache_hits / total * 100 if total > 0 else 0
+
+            logger.info(
+                "AI Cache | Treffer: %s | Misses: %s | Hit Rate: %.1f%% | Letzter: %s",
+                cache_hits,
+                cache_misses,
+                hit_rate,
+                cache_status,
             )
 
             # 3. MongoDB-Speicherung

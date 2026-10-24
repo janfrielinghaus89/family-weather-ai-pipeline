@@ -1,5 +1,7 @@
 import json
+from unittest.mock import MagicMock
 
+from consumer import message_already_processed
 import pytest
 
 from pipeline_resilience import (
@@ -78,3 +80,39 @@ def test_retry_exhausted():
             initial_delay=0,
             sleep=lambda _: None,
         )
+
+def test_already_processed_message():
+    collection = MagicMock()
+    message = MagicMock()
+
+    message.topic.return_value = "weather_data"
+    message.partition.return_value = 0
+    message.offset.return_value = 262
+
+    collection.find_one.return_value = {
+        "_id": "weather_data:0:262"
+    }
+
+    assert message_already_processed(
+        collection, message
+    ) is True
+
+    collection.find_one.assert_called_once_with(
+        {"_id": "weather_data:0:262"},
+        {"_id": 1},
+    )
+
+
+def test_new_message():
+    collection = MagicMock()
+    message = MagicMock()
+
+    message.topic.return_value = "weather_data"
+    message.partition.return_value = 0
+    message.offset.return_value = 263
+
+    collection.find_one.return_value = None
+
+    assert message_already_processed(
+        collection, message
+    ) is False

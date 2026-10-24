@@ -106,6 +106,22 @@ If retries are exhausted during an Ollama or MongoDB-related failure, the consum
 
 The current implementation provides at-least-once processing behavior, rather than end-to-end exactly-once guarantees.
 
+### AI Inference Optimization
+
+WeatherWatcher minimizes redundant LLM inference through a MongoDB-backed caching mechanism.
+
+**Features:**
+- **Weather Fingerprinting:** Generates deterministic SHA-256 hashes based on location, weather conditions, AI model, and prompt version.
+- **AI Response Caching:** Reuses previously generated weather analyses for identical conditions.
+- **Cache Expiration:** Cached analyses remain reusable for up to 60 minutes.
+- **Duplicate Detection:** Already persisted Kafka messages are skipped before AI processing.
+- **Performance Logging:** Tracks cache hits, misses, hit rates, and inference duration.
+- **Historical Data Preservation:** Every new valid Kafka event is still stored, even when its AI analysis comes from the cache.
+
+These optimizations significantly reduce unnecessary LLM requests and help prevent Kafka consumer lag when using local AI models such as Qwen3 8B.
+
+Cache hits and misses are currently tracked per consumer session. Persistent performance monitoring is planned for a future release.
+
 ## Repository layout
 
 ```text
