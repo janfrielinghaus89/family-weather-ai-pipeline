@@ -22,6 +22,7 @@ from ai_cache import (
 
 from pipeline_resilience import (
     InvalidWeatherRecord,
+    message_already_processed,
     validate_weather,
     retry_operation,
     send_to_dlq,
@@ -169,23 +170,6 @@ def save_to_mongodb(
 
     except DuplicateKeyError:
         logger.info("Nachricht %s bereits gespeichert", document_id)
-
-
-# ==========================================
-# Message check
-# ==========================================
-def message_already_processed(collection, message) -> bool:
-    """Prüft, ob ein Kafka-Event bereits gespeichert wurde."""
-
-    document_id = f"{message.topic()}:{message.partition()}:{message.offset()}"
-
-    return (
-        collection.find_one(
-            {"_id": document_id},
-            {"_id": 1},
-        )
-        is not None
-    )
 
 
 # ==========================================

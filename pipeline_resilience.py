@@ -127,3 +127,17 @@ def send_to_dlq(
         message.partition(),
         message.offset(),
     )
+
+
+def message_already_processed(collection, message) -> bool:
+    """Prüft, ob ein Kafka-Event bereits in MongoDB existiert."""
+
+    document_id = f"{message.topic()}:{message.partition()}:{message.offset()}"
+
+    return (
+        collection.find_one(
+            {"_id": document_id},
+            {"_id": 1},
+        )
+        is not None
+    )

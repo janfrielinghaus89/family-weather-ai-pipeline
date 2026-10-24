@@ -1,7 +1,7 @@
 import json
 from unittest.mock import MagicMock
 
-from consumer import message_already_processed
+from pipeline_resilience import message_already_processed
 import pytest
 
 from pipeline_resilience import (
