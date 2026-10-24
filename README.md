@@ -89,6 +89,23 @@ Features include:
 
 Tracked locations are managed independently of historical weather records. Removing a location stops future tracking without deleting existing weather data.
 
+### Pipeline Resilience & Error Handling
+
+WeatherWatcher includes fault-tolerant processing mechanisms to improve reliability when handling weather events and communicating with external services.
+
+Key features:
+
+- **Weather Data Validation:** Incoming Kafka messages are validated with Pydantic before processing.
+- **Retry Mechanism:** Temporary Ollama failures trigger retries with exponential backoff.
+- **Dead Letter Queue:** Invalid weather events are redirected to the `weather_data_dlq` Kafka topic for investigation.
+- **Manual Offset Management:** Kafka offsets are committed only after successful MongoDB persistence or confirmed DLQ delivery.
+- **Idempotent Storage:** MongoDB document IDs derived from Kafka topic, partition, and offset help prevent duplicate records.
+- **Error Logging:** Invalid messages, retry attempts, and processing failures are logged for troubleshooting.
+
+If retries are exhausted during an Ollama or MongoDB-related failure, the consumer stops without acknowledging the affected message. Processing can resume from the last committed Kafka offset when the consumer restarts.
+
+The current implementation provides at-least-once processing behavior, rather than end-to-end exactly-once guarantees.
+
 ## Repository layout
 
 ```text

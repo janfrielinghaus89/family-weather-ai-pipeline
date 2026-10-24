@@ -1,16 +1,24 @@
 import json
 import logging
-from datetime import datetime, timezone
+import httpx
 import os
+from datetime import datetime, timezone
 from dotenv import load_dotenv
-from confluent_kafka import Consumer, KafkaException
+from confluent_kafka import Consumer, Producer, KafkaException
 
-from ollama import Client
+from ollama import Client, ResponseError
 from pydantic import BaseModel, Field
 from pymongo import MongoClient
 from pymongo.errors import DuplicateKeyError
 from urllib.parse import quote_plus
 from config import OLLAMA_HOST, OLLAMA_MODEL
+
+from pipeline_resilience import (
+    InvalidWeatherRecord,
+    validate_weather,
+    retry_operation,
+    send_to_dlq,
+)
 
 load_dotenv()
 
@@ -205,35 +213,68 @@ def run_consumer() -> None:
             if message.error():
                 raise KafkaException(message.error())
 
-            weather = json.loads(message.value().decode("utf-8"))
+            # 1. Wetterdaten validieren
+            try:
+                weather = validate_weather(message.value())
+
+            except InvalidWeatherRecord as error:
+                logger.warning("Ungültige Wetterdaten: %s", error)
+
+                # Erst DLQ bestätigen lassen
+                send_to_dlq(
+                    dlq_producer,
+                    message,
+                    str(error),
+                )
+
+                # Danach ursprünglichen Offset bestätigen
+                consumer.commit(
+                    message=message,
+                    asynchronous=False,
+                )
+                continue
 
             logger.info(
-                "Wetterdaten empfangen: %s | Offset: %s",
+                "Verarbeite Wetterdaten für %s",
                 weather.get("city"),
+            )
+
+            # 2. Ollama mit Retry
+            analysis = retry_operation(
+                lambda: analyze_weather(
+                    weather,
+                    ollama_client,
+                ),
+                attempts=3,
+                initial_delay=2,
+                retry_exceptions=(
+                    ConnectionError,
+                    TimeoutError,
+                    httpx.TimeoutException,
+                    ResponseError,
+                ),
+            )
+
+            # 3. MongoDB-Speicherung
+            # Vorhandene idempotente Funktion weiterverwenden
+            save_to_mongodb(
+                collection,
+                weather,
+                analysis,
+                message,
+            )
+
+            # 4. Kafka erst nach MongoDB bestätigen
+            consumer.commit(
+                message=message,
+                asynchronous=False,
+            )
+
+            logger.info(
+                "Nachricht erfolgreich verarbeitet: Partition %s, Offset %s",
+                message.partition(),
                 message.offset(),
             )
-
-            logger.info("Analysiere mit %s ...", OLLAMA_MODEL)
-
-            # KI-Auswertung
-            analysis = analyze_weather(weather, ollama_client)
-
-            logger.info(
-                "Sentiment: %s/10 | %s",
-                analysis.sentiment_score,
-                analysis.sentiment_label,
-            )
-
-            # MongoDB
-            save_to_mongodb(collection, weather, analysis, message)
-
-            # Offset erst nach erfolgreicher Speicherung bestätigen
-            consumer.commit(message=message, asynchronous=False)
-
-            logger.info("MongoDB gespeichert und Kafka bestätigt")
-
-            for index, activity in enumerate(analysis.activities, start=1):
-                logger.info("Aktivität %s: %s", index, activity.name)
 
     except KeyboardInterrupt:
         logger.info("Consumer wird beendet ...")
@@ -250,8 +291,18 @@ def run_consumer() -> None:
         if consumer is not None:
             consumer.close()
 
+        dlq_producer.flush(timeout=15)
         mongo_client.close()
         logger.info("Verbindungen geschlossen")
+
+
+dlq_producer = Producer(
+    {
+        "bootstrap.servers": KAFKA_SERVER,
+        "acks": "all",
+        "enable.idempotence": True,
+    }
+)
 
 
 if __name__ == "__main__":
