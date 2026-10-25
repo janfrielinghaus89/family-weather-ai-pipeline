@@ -126,9 +126,7 @@ def recommendation_key(
         ensure_ascii=False,
     )
 
-    return hashlib.sha256(
-        content.encode("utf-8")
-    ).hexdigest()
+    return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
 
 def get_cached_advice(db, key: str) -> dict | None:
