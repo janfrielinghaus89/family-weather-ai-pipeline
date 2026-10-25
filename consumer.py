@@ -1,62 +1,66 @@
+"""Kafka Weather AI Consumer mit konfigurierbaren KI-Providern."""
+
 import json
 import logging
-import httpx
 import os
 from datetime import datetime, timezone
-from dotenv import load_dotenv
-from confluent_kafka import Consumer, Producer, KafkaException
+from time import perf_counter
+from urllib.parse import quote_plus
 
-from ollama import Client, ResponseError
+import httpx
+import ollama
+import openai
+from confluent_kafka import Consumer, KafkaException, Producer
+from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 from pymongo import MongoClient
 from pymongo.errors import DuplicateKeyError
-from urllib.parse import quote_plus
-from config import OLLAMA_HOST, OLLAMA_MODEL
-from time import perf_counter
 
+from ai.base import AIProvider
+from ai.settings import (
+    create_provider_from_settings,
+    load_ai_settings,
+    settings_identity,
+)
 from ai_cache import (
     get_cached_analysis,
     store_cached_analysis,
     weather_fingerprint,
 )
-
 from pipeline_resilience import (
     InvalidWeatherRecord,
     message_already_processed,
-    validate_weather,
     retry_operation,
     send_to_dlq,
+    validate_weather,
 )
 
-load_dotenv()
-
-# ==========================================
-# Konfiguration
-# ==========================================
+load_dotenv(override=True)
 
 KAFKA_SERVER = os.getenv("KAFKA_BOOTSTRAP_SERVER", "127.0.0.1:9092")
 KAFKA_TOPIC = "weather_data"
 KAFKA_GROUP = "weather-ai-consumer"
-
-
-MONGO_URI = (
-    f"mongodb://{quote_plus(os.environ['MONGO_USERNAME'])}:"
-    f"{quote_plus(os.environ['MONGO_PASSWORD'])}@"
-    f"{os.getenv('MONGO_HOST', 'localhost')}:"
-    f"{os.getenv('MONGO_PORT', '27017')}/"
-    "?authSource=admin"
-)
 MONGO_DATABASE = "weather_project"
 MONGO_COLLECTION = "weather_analysis"
 
 logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s"
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(message)s",
 )
 logger = logging.getLogger(__name__)
 
 
+def mongo_uri_from_env() -> str:
+    """Lädt MongoDB-Zugangsdaten erst beim Start, nicht beim Import."""
+    username = quote_plus(os.environ["MONGO_USERNAME"])
+    password = quote_plus(os.environ["MONGO_PASSWORD"])
+    host = os.getenv("MONGO_HOST", "localhost")
+    port = os.getenv("MONGO_PORT", "27017")
+    return f"mongodb://{username}:{password}@{host}:{port}/?authSource=admin"
+
+
 # ==========================================
-# KI-Antwortformat
+# KI-Antwortformat und Prompt
 # ==========================================
 
 
@@ -78,8 +82,11 @@ class WeatherAnalysis(BaseModel):
 # ==========================================
 
 
-def analyze_weather(weather: dict, ollama_client: Client) -> WeatherAnalysis:
-    """Analysiert Wetterdaten mit lokalem Ollama."""
+def analyze_weather(
+    weather: dict,
+    provider: AIProvider,
+) -> WeatherAnalysis:
+    """Analysiert Wetterdaten über den konfigurierten KI-Anbieter."""
 
     prompt = f"""
 Analysiere die folgenden Wetterdaten als Familienassistent.
@@ -115,26 +122,18 @@ REGELN:
 - Gib deine Antwort im vorgegebenen JSON-Format zurück.
 """
 
-    response = ollama_client.chat(
-        model=OLLAMA_MODEL,
-        messages=[
-            {
-                "role": "system",
-                "content": (
-                    "Du bist ein hilfreicher, vorsichtiger "
-                    "Familien- und Wetterassistent. "
-                    "Bewerte Wetterbedingungen sachlich und "
-                    "empfiehl sichere Aktivitäten für Familien."
-                ),
-            },
-            {"role": "user", "content": prompt},
-        ],
-        format=WeatherAnalysis.model_json_schema(),
-        options={"temperature": 0.2},
-        stream=False,
+    analysis = provider.generate(
+        system_prompt=(
+            "Du bist ein hilfreicher, vorsichtiger "
+            "Familien- und Wetterassistent. "
+            "Bewerte Wetterbedingungen sachlich und "
+            "empfiehl sichere Aktivitäten für Familien."
+        ),
+        user_prompt=prompt,
+        response_model=WeatherAnalysis,
     )
 
-    return WeatherAnalysis.model_validate_json(response.message.content)
+    return analysis
 
 
 # ==========================================
@@ -143,12 +142,14 @@ REGELN:
 
 
 def save_to_mongodb(
-    collection, weather: dict, analysis: WeatherAnalysis, message
+    collection,
+    weather: dict,
+    analysis: WeatherAnalysis,
+    message,
+    provider: AIProvider,
+    model_identity: str,
 ) -> None:
-    """Speichert Wetterdaten und KI-Auswertung."""
-
-    # Kafka-Position als eindeutige Dokument-ID:
-    # Bei erneutem Verarbeiten keine doppelten Einträge.
+    """Speichert eine Wetterbeobachtung idempotent mit korrekter KI-Metadatenkennung."""
     document_id = f"{message.topic()}:{message.partition()}:{message.offset()}"
 
     document = {
@@ -157,7 +158,9 @@ def save_to_mongodb(
         "weather": weather,
         "ai_analysis": analysis.model_dump(),
         "metadata": {
-            "model": OLLAMA_MODEL,
+            "model": provider.model_name,
+            "provider": provider.provider_name,
+            "model_identity": model_identity,
             "kafka_topic": message.topic(),
             "kafka_partition": message.partition(),
             "kafka_offset": message.offset(),
@@ -167,7 +170,6 @@ def save_to_mongodb(
 
     try:
         collection.insert_one(document)
-
     except DuplicateKeyError:
         logger.info("Nachricht %s bereits gespeichert", document_id)
 
@@ -178,29 +180,19 @@ def save_to_mongodb(
 
 
 def run_consumer() -> None:
-    """Liest Kafka-Nachrichten und verarbeitet sie."""
-
+    """Validiert Kafka-Nachrichten, nutzt KI-Cache und committed erst nach Speicherung."""
     logger.info("Starte Kafka Weather AI Consumer")
 
-    logger.info("Ollama Host: %s", OLLAMA_HOST)
-    logger.info("Ollama Modell: %s", OLLAMA_MODEL)
-    ollama_client = Client(host=OLLAMA_HOST, timeout=120, trust_env=False)
-
-    mongo_client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=10000)
-
+    mongo_client = None
     consumer = None
+    dlq_producer = None
 
     try:
-        # MongoDB-Verbindung überprüfen
+        mongo_client = MongoClient(mongo_uri_from_env(), serverSelectionTimeoutMS=10000)
         mongo_client.admin.command("ping")
-
-        collection = mongo_client[MONGO_DATABASE][MONGO_COLLECTION]
-
-        cache_collection = mongo_client[MONGO_DATABASE]["ai_analysis_cache"]
-
-        cache_hits = 0
-        cache_misses = 0
-
+        db = mongo_client[MONGO_DATABASE]
+        collection = db[MONGO_COLLECTION]
+        cache_collection = db["ai_analysis_cache"]
         logger.info("MongoDB verbunden")
 
         consumer = Consumer(
@@ -209,27 +201,33 @@ def run_consumer() -> None:
                 "group.id": KAFKA_GROUP,
                 "auto.offset.reset": "earliest",
                 "enable.auto.commit": False,
+                "enable.auto.offset.store": False,
                 "max.poll.interval.ms": 900000,
             }
         )
-
+        dlq_producer = Producer(
+            {
+                "bootstrap.servers": KAFKA_SERVER,
+                "acks": "all",
+                "enable.idempotence": True,
+            }
+        )
         consumer.subscribe([KAFKA_TOPIC])
-
         logger.info("Warte auf Nachrichten aus Topic '%s' ...", KAFKA_TOPIC)
+
+        cache_hits = 0
+        cache_misses = 0
+        active_settings_id = None
+        ai_provider = None
 
         while True:
             message = consumer.poll(timeout=1.0)
-
             if message is None:
                 continue
-
             if message.error():
                 raise KafkaException(message.error())
 
-            # ==========================================
-            # Bereits verarbeitete Nachrichten überspringen
-            # ==========================================
-
+            # Bestehende Kafka-Events weder erneut analysieren noch cachen.
             if message_already_processed(collection, message):
                 logger.info(
                     "SKIP | Nachricht %s:%s:%s bereits verarbeitet",
@@ -237,153 +235,101 @@ def run_consumer() -> None:
                     message.partition(),
                     message.offset(),
                 )
-
-                consumer.commit(
-                    message=message,
-                    asynchronous=False,
-                )
+                consumer.commit(message=message, asynchronous=False)
                 continue
 
-            # 1. Wetterdaten validieren
             try:
                 weather = validate_weather(message.value())
-
             except InvalidWeatherRecord as error:
                 logger.warning("Ungültige Wetterdaten: %s", error)
-
-                # Erst DLQ bestätigen lassen
-                send_to_dlq(
-                    dlq_producer,
-                    message,
-                    str(error),
-                )
-
-                # Danach ursprünglichen Offset bestätigen
-                consumer.commit(
-                    message=message,
-                    asynchronous=False,
-                )
+                # Erst eine erfolgreiche DLQ-Zustellung, dann den Offset bestätigen.
+                send_to_dlq(dlq_producer, message, str(error))
+                consumer.commit(message=message, asynchronous=False)
                 continue
 
-            logger.info(
-                "Verarbeite Wetterdaten für %s",
-                weather.get("city"),
-            )
+            logger.info("Verarbeite Wetterdaten für %s", weather.get("city"))
 
-            # 2. Ollama mit Retry
+            # Einstellungen vor jeder neuen Analyse laden. Kein Neustart nötig.
+            settings = load_ai_settings(db)
+            new_settings_id = settings_identity(settings)
+            if ai_provider is None or new_settings_id != active_settings_id:
+                ai_provider = create_provider_from_settings(settings)
+                active_settings_id = new_settings_id
+                logger.info(
+                    "KI-Konfiguration aktiviert: %s | %s",
+                    ai_provider.provider_name,
+                    ai_provider.model_name,
+                )
 
-            # ==========================================
-            # AI Response Cache
-            # ==========================================
-
-            fingerprint = weather_fingerprint(
-                weather,
-                OLLAMA_MODEL,
-            )
-
-            cached_analysis = get_cached_analysis(
-                cache_collection,
-                fingerprint,
-            )
+            # Provider, Modell und Endpoint gehen in die Cache-Identität ein.
+            model_identity = active_settings_id
+            fingerprint = weather_fingerprint(weather, model_identity)
+            cached_analysis = get_cached_analysis(cache_collection, fingerprint)
 
             if cached_analysis is not None:
-                # Cache-Hit: Kein Aufruf von Ollama nötig
                 analysis = WeatherAnalysis.model_validate(cached_analysis)
                 cache_hits += 1
                 cache_status = "hit"
-
                 logger.info(
                     "AI Cache HIT | %s | Fingerprint: %s",
                     weather["city"],
                     fingerprint[:12],
                 )
-
             else:
-                # Cache-Miss: KI wie bisher aufrufen
-
                 cache_status = "miss"
-
                 logger.info(
-                    "AI Cache MISS | %s | Starte %s",
+                    "AI Cache MISS | %s | Starte %s (%s)",
                     weather["city"],
-                    OLLAMA_MODEL,
+                    ai_provider.model_name,
+                    ai_provider.provider_name,
                 )
-
                 start_time = perf_counter()
-
                 analysis = retry_operation(
-                    lambda: analyze_weather(
-                        weather,
-                        ollama_client,
-                    ),
+                    lambda: analyze_weather(weather, ai_provider),
                     attempts=3,
                     initial_delay=2,
                     retry_exceptions=(
                         ConnectionError,
                         TimeoutError,
                         httpx.TimeoutException,
-                        ResponseError,
+                        ollama.ResponseError,
+                        openai.APIConnectionError,
+                        openai.APITimeoutError,
+                        openai.RateLimitError,
+                        openai.InternalServerError,
                     ),
                 )
-
-                inference_seconds = perf_counter() - start_time
-
                 logger.info(
                     "KI-Auswertung abgeschlossen in %.2f Sekunden",
-                    inference_seconds,
+                    perf_counter() - start_time,
                 )
-
                 store_cached_analysis(
                     cache_collection,
                     fingerprint,
-                    OLLAMA_MODEL,
+                    model_identity,
                     analysis.model_dump(),
                 )
-
                 cache_misses += 1
 
-            # ==========================================
-            # Bestehende MongoDB-Speicherung
-            # ==========================================
-
+            # Pro Nachricht genau eine Speicherung und ein Kafka-Commit.
             save_to_mongodb(
                 collection,
                 weather,
                 analysis,
                 message,
+                ai_provider,
+                model_identity,
             )
-
-            consumer.commit(
-                message=message,
-                asynchronous=False,
-            )
+            consumer.commit(message=message, asynchronous=False)
 
             total = cache_hits + cache_misses
-            hit_rate = cache_hits / total * 100 if total > 0 else 0
-
             logger.info(
                 "AI Cache | Treffer: %s | Misses: %s | Hit Rate: %.1f%% | Letzter: %s",
                 cache_hits,
                 cache_misses,
-                hit_rate,
+                cache_hits / total * 100 if total else 0,
                 cache_status,
             )
-
-            # 3. MongoDB-Speicherung
-            # Vorhandene idempotente Funktion weiterverwenden
-            save_to_mongodb(
-                collection,
-                weather,
-                analysis,
-                message,
-            )
-
-            # 4. Kafka erst nach MongoDB bestätigen
-            consumer.commit(
-                message=message,
-                asynchronous=False,
-            )
-
             logger.info(
                 "Nachricht erfolgreich verarbeitet: Partition %s, Offset %s",
                 message.partition(),
@@ -392,31 +338,20 @@ def run_consumer() -> None:
 
     except KeyboardInterrupt:
         logger.info("Consumer wird beendet ...")
-
     except Exception:
         logger.exception(
-            "Verarbeitung fehlgeschlagen. "
-            "Nachricht bleibt unbestätigt, "
+            "Verarbeitung fehlgeschlagen. Nachricht bleibt unbestätigt, "
             "Consumer wird beendet."
         )
         raise
-
     finally:
         if consumer is not None:
             consumer.close()
-
-        dlq_producer.flush(timeout=15)
-        mongo_client.close()
+        if dlq_producer is not None:
+            dlq_producer.flush(timeout=15)
+        if mongo_client is not None:
+            mongo_client.close()
         logger.info("Verbindungen geschlossen")
-
-
-dlq_producer = Producer(
-    {
-        "bootstrap.servers": KAFKA_SERVER,
-        "acks": "all",
-        "enable.idempotence": True,
-    }
-)
 
 
 if __name__ == "__main__":

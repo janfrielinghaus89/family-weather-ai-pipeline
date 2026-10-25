@@ -9,6 +9,12 @@ import requests
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
+from ai.settings_ui import render_ai_settings
+from ai.settings import (
+    create_provider_from_settings,
+    load_ai_settings,
+    settings_identity,
+)
 from pymongo import MongoClient
 from pymongo.errors import PyMongoError
 from pydantic import ValidationError
@@ -64,6 +70,13 @@ def get_database():
     client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
     client.admin.command("ping")
     return client[DATABASE]
+
+
+try:
+    db = get_database()
+except PyMongoError as error:
+    st.error(f"MongoDB ist nicht erreichbar: {error}")
+    st.stop()
 
 
 # ==========================================
@@ -122,6 +135,22 @@ with st.sidebar.expander("📍 Standorte verwalten"):
             if st.button("✕", key=f"remove_{location['_id']}"):
                 remove_tracked_location(get_database(), location["_id"])
                 st.rerun()
+
+
+# ==========================================
+# Stadtauswahl aus tracked_locations
+# ==========================================
+
+with st.sidebar:
+    st.divider()
+
+    if st.button("⚙️ AI Settings"):
+        st.session_state["show_ai_settings"] = not st.session_state.get(
+            "show_ai_settings", False
+        )
+
+if st.session_state.get("show_ai_settings", False):
+    render_ai_settings(db)
 
 
 # ==========================================
@@ -448,8 +477,7 @@ st.html(
 
 st.markdown("### 🌳 Aktivitäten mit eurer Tochter")
 st.caption(
-    "Drei Vorschläge, die dein lokales "
-    "Llama-3.2-Modell anhand der Wetterdaten erstellt hat."
+    "Drei familienfreundliche Vorschläge aus der aktuell gespeicherten KI-Wetteranalyse."
 )
 
 if not activities:
@@ -476,8 +504,6 @@ else:
 
 st.divider()
 st.header("👨‍👩‍👧 Familienprofil & Kleidung")
-
-db = get_database()
 
 try:
     profile = load_profile(db)
@@ -571,30 +597,40 @@ st.caption(
     "Familienprofil und die aktuell ausgewählten Wetterdaten."
 )
 
-cache_key = recommendation_key(document["_id"], profile)
-
 try:
+    ai_settings = load_ai_settings(db)
+    ai_identity = settings_identity(ai_settings)
+    cache_key = recommendation_key(document["_id"], profile, model_identity=ai_identity)
     cached = get_cached_advice(db, cache_key)
-except PyMongoError as error:
+except (PyMongoError, ValueError, KeyError) as error:
     st.error(f"Empfehlungen konnten nicht geladen werden: {error}")
     cached = None
+    cache_key = None
+    ai_settings = None
 
 if st.button("✨ Empfehlungen generieren", type="primary"):
-    if cached is None:
-        with st.spinner("Ollama analysiert die Wetterlage ..."):
+    if cached is None and ai_settings is not None and cache_key is not None:
+        with st.spinner("KI analysiert die Wetterlage ..."):
             try:
-                advice = generate_advice(weather, profile)
-
-                save_advice(db, cache_key, document["_id"], profile, advice)
-
+                provider = create_provider_from_settings(ai_settings)
+                advice = generate_advice(weather, profile, provider=provider)
+                save_advice(
+                    db,
+                    cache_key,
+                    document["_id"],
+                    profile,
+                    advice,
+                    provider=provider,
+                    model_identity=ai_identity,
+                )
                 st.success("Empfehlungen gespeichert.")
                 st.rerun()
-
             except Exception as error:
                 st.error(f"KI-Auswertung fehlgeschlagen: {error}")
-    else:
+    elif cached is not None:
         st.info("Für dieses Wetter und Familienprofil existieren bereits Empfehlungen.")
-
+    else:
+        st.error("Die KI-Einstellungen konnten nicht geladen werden.")
 
 # ==========================================
 # Ergebnisse anzeigen
